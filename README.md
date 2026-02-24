@@ -132,7 +132,11 @@ conda env create -f environment.yml
 # 2. Activate it
 conda activate nightcore-analyzer
 
-# 3. (Optional) If TensorFlow still cannot see the GPU after conda setup,
+# 3. Install CREPE (must be done separately — legacy setup.py breaks
+#    pip's build isolation on modern Python)
+pip install --no-build-isolation crepe
+
+# 4. (Optional) If TensorFlow still cannot see the GPU after conda setup,
 #    install the CUDA toolkit inside the conda env:
 conda install -c nvidia cuda-toolkit cudnn
 ```
