@@ -336,31 +336,34 @@ CREPE downloads model weights on first use (~84 MB) from the internet. Ensure ne
 
 ```
 nightcore-to-flac-analyzer/
-├── verify_cuda.py          # Step 1: environment + CUDA verification
-├── requirements.txt        # pip dependency specification
-├── environment.yml         # Conda environment specification
+├── verify_cuda.py              # Step 1: environment + CUDA verification
+├── setup_conda_libcuda.sh      # one-time conda LD_LIBRARY_PATH fix (fish + bash)
+├── requirements.txt            # pip dependency specification
+├── environment.yml             # Conda environment specification
 ├── .gitignore
 ├── LICENSE
 ├── README.md
 │
-│   # Added in Step 2:
-├── analyzer/
-│   ├── __init__.py
-│   ├── pipeline.py         # windowed consensus pipeline (core logic)
-│   ├── pitch.py            # CREPE pitch extraction per window
-│   ├── tempo.py            # librosa onset-based tempo estimation
-│   ├── consensus.py        # RANSAC / median consensus + classification
-│   └── io.py               # audio loading, resampling, energy gating
+│   # Step 2 (current):
+├── nightcore_analyzer/
+│   ├── __init__.py             # package root; exposes run() and AnalysisResult
+│   ├── __main__.py             # python -m nightcore_analyzer → Step 3 placeholder
+│   ├── cli.py                  # python -m nightcore_analyzer.cli  (fully working)
+│   ├── pipeline.py             # top-level orchestrator
+│   ├── io.py                   # audio loading, resampling, windowing, energy gating
+│   ├── pitch.py                # CREPE per-window F0 estimation
+│   ├── tempo.py                # librosa per-window BPM estimation
+│   └── consensus.py            # median/bootstrap ratio, CI, classification, RB params
 │
-│   # Added in Step 3:
-├── gui/
-│   ├── __init__.py
-│   ├── main_window.py      # PyQt6 main window + file pickers
-│   └── worker.py           # QThread worker wrapping the pipeline
+│   # Step 3 (pending):
+├── nightcore_analyzer/
+│   └── gui/
+│       ├── __init__.py
+│       ├── main_window.py      # PyQt6 main window + file pickers
+│       └── worker.py           # QThread worker wrapping the pipeline
 │
-│   # Added in Step 4:
-├── gui/
-│   └── histogram_widget.py # per-window estimate visualisation
+│   # Step 4 (pending):
+│       └── histogram_widget.py # per-window estimate visualisation
 │
 │   # Added in Step 5:
 ├── gui/
@@ -377,22 +380,20 @@ nightcore-to-flac-analyzer/
 
 | Step | Status | Description |
 |------|--------|-------------|
-| **1** | **Current** | Environment setup, CUDA verification |
-| 2 | Pending Step 1 pass | Core analysis module — CLI-testable windowed pipeline |
-| 3 | Pending Step 2 | PyQt6 GUI shell — file pickers, run button, worker thread |
-| 4 | Pending Step 3 | Results visualisation — per-window histograms |
-| 5 | Pending Step 4 | Output panel — ratios, CIs, classification, Rubber Band params |
-| 6 | Pending Step 5 | QoL — session persistence, JSON/CSV export, batch mode |
-
-> Step 2 does not begin until `verify_cuda.py` exits cleanly with all checks passing, including GPU detection. This is the historically friction-heavy part on Arch-derivative systems.
+| 1 | ✅ Complete | Environment setup, CUDA verification |
+| **2** | **✅ Complete** | Core analysis module — CLI-testable windowed pipeline |
+| 3 | Pending | PyQt6 GUI shell — file pickers, run button, worker thread |
+| 4 | Pending | Results visualisation — per-window histograms |
+| 5 | Pending | Output panel — ratios, CIs, classification, Rubber Band params |
+| 6 | Pending | QoL — session persistence, JSON/CSV export, batch mode |
 
 ---
 
 ## Usage
 
-> **Step 2 and beyond are not yet implemented.** This section will be updated as each step is completed.
+Steps 1 and 2 are complete.  The CLI is fully operational.  GUI (Step 3) is not yet implemented.
 
-Once the full tool is implemented, usage will be:
+
 
 ```bash
 # GUI mode (Steps 3+)
