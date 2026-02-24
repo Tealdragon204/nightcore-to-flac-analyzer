@@ -34,25 +34,20 @@ dependencies:
   - numpy>=1.24,<2.0
   - scipy>=1.11
 
-  # Audio analysis (conda-forge builds link against system libsndfile)
+  # Audio analysis
   - librosa>=0.10.1
-  - soundfile>=0.12.1
+  - python-soundfile>=0.12.1   # conda-forge name for the soundfile package
   - audioread>=3.0.0
 
   # Visualisation
   - matplotlib>=3.8.0
 
-  # Qt platform (conda-forge provides complete Qt6 stack)
-  - pyqt>=6.6.0
-
   # Progress bars
   - tqdm>=4.66.0
 
-  # Install remaining packages via pip (no conda packages available)
+  # Install remaining packages via pip (unavailable or unreliable via conda)
   - pip:
     # TensorFlow with bundled CUDA wheels
-    # If conda-forge cuda-toolkit is installed, TF will prefer it;
-    # the [and-cuda] extra is a safe fallback.
     - "tensorflow[and-cuda]>=2.15.0,<2.17.0"
 
     # CREPE pitch detector (TF-based)
@@ -62,8 +57,8 @@ dependencies:
     # Requires rubberband binary: sudo pacman -S rubberband
     - "pyrubberband>=0.3.0"
 
+    # PyQt6 — use pip; conda-forge 'pyqt' package is PyQt5, not PyQt6
+    - "PyQt6>=6.6.0"
+
     # Fast real-time Qt plotting
     - "pyqtgraph>=0.13.4"
-
-    # PyQt6 (pip version needed alongside conda pyqt for PyQt6 specifically)
-    - "PyQt6>=6.6.0"
