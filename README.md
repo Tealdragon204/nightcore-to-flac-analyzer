@@ -393,16 +393,16 @@ nightcore-to-flac-analyzer/
 
 Steps 1 and 2 are complete.  The CLI is fully operational.  GUI (Step 3) is not yet implemented.
 
-
-
 ```bash
-# GUI mode (Steps 3+)
+# GUI mode (Steps 3+) — not yet implemented
 python -m nightcore_analyzer
 
-# CLI mode (available from Step 2)
+# CLI mode
+# Always quote paths — spaces and parentheses (common in music filenames) break
+# unquoted shell arguments, especially in fish where (...) is command substitution.
 python -m nightcore_analyzer.cli \
-    --nightcore /path/to/nightcore.flac \
-    --source    /path/to/original.flac \
+    --nightcore "/path/to/nightcore track.mp3" \
+    --source    "/path/to/original (Radio Edit).flac" \
     --output    results.json
 ```
 
