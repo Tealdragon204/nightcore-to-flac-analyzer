@@ -10,7 +10,8 @@
 # Activate:
 #   conda activate nightcore-analyzer
 #
-# Install CREPE (requires --no-build-isolation due to legacy setup.py):
+# Install CREPE (setuptools>=81 removed pkg_resources; pin to <81 first):
+#   pip install "setuptools<81"
 #   pip install --no-build-isolation crepe
 #
 # Verify:
@@ -32,7 +33,7 @@ dependencies:
   # Core Python runtime
   - python=3.11
   - pip
-  - setuptools             # needed for CREPE's legacy setup.py (pkg_resources)
+  - "setuptools<81"        # setuptools 81+ removed pkg_resources; CREPE requires it
 
   # NumPy/SciPy pinned below 2.x for TensorFlow/librosa compatibility
   - numpy>=1.24,<2.0
@@ -44,16 +45,29 @@ dependencies:
   # Progress bars
   - tqdm>=4.66.0
 
+  # ── IMPORTANT: do NOT run `conda install cuda-toolkit` or
+  # `conda install -c nvidia cudnn` into this environment.
+  # tensorflow[and-cuda] (below) bundles its own CUDA 12 wheels via pip
+  # (nvidia-cuda-runtime-cu12, nvidia-cudnn-cu12, etc.).  Installing a
+  # conda-managed CUDA 13 toolkit alongside those pip wheels creates a
+  # version conflict (libcudart.so.13 vs libcudart.so.12) and makes the
+  # environment very hard to debug.  If you already did this, recreate
+  # the environment from scratch.
+
   # Everything else via pip — avoids conda-forge package name ambiguity
   # for audio libs and pip-only packages
   - pip:
-    # TensorFlow with bundled CUDA wheels
+    # TensorFlow with bundled CUDA 12 wheels.
+    # NOTE: libcuda.so.1 (driver stub) still comes from the system NVIDIA
+    # driver package and must be on LD_LIBRARY_PATH.  Run the one-time
+    # helper after env creation:
+    #   bash setup_conda_libcuda.sh
     - "tensorflow[and-cuda]>=2.15.0,<2.17.0"
 
-    # NOTE: CREPE is NOT listed here — it must be installed separately
-    # after env creation with: pip install --no-build-isolation crepe
-    # (Its legacy setup.py imports pkg_resources, which breaks pip's
-    # build isolation on modern Python/setuptools.)
+    # NOTE: CREPE is NOT listed here — setuptools 81+ removed pkg_resources,
+    # which CREPE's legacy setup.py imports. The conda dep above pins
+    # setuptools<81. Install CREPE manually after env creation:
+    #   pip install --no-build-isolation crepe
 
     # Audio I/O — pip names are unambiguous; conda-forge names vary by version
     - "librosa>=0.10.1"

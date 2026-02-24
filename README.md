@@ -132,8 +132,10 @@ conda env create -f environment.yml
 # 2. Activate it
 conda activate nightcore-analyzer
 
-# 3. Install CREPE (must be done separately — legacy setup.py breaks
-#    pip's build isolation on modern Python)
+# 3. Install CREPE — must be done separately.
+#    setuptools 81+ removed pkg_resources entirely; CREPE's 2020-era setup.py
+#    imports it. Pin setuptools<81, then install CREPE without build isolation:
+pip install "setuptools<81"
 pip install --no-build-isolation crepe
 
 # 4. (Optional) If TensorFlow still cannot see the GPU after conda setup,
@@ -187,21 +189,107 @@ Expected output on a working system (abbreviated):
 
 ## Troubleshooting CUDA
 
-### `nvidia-smi` works but TensorFlow cannot see the GPU
+### `nvidia-smi` not found — NVIDIA driver not installed
 
-TensorFlow's bundled CUDA wheels need to locate the NVIDIA driver library. On Arch-derivative systems with custom driver paths, set:
+This is the most common cause of the GPU CRITICAL failure. TensorFlow (even
+`tensorflow[and-cuda]`, which bundles its own CUDA toolkit) still requires the
+NVIDIA driver's user-space library `libcuda.so.1` to be present on the system.
+That library ships with the driver package, not with any conda or pip install.
+
+**Check first:**
 
 ```bash
-# Find where libcuda.so.1 lives on your system
-find /usr -name "libcuda.so.1" 2>/dev/null
-find /opt -name "libcuda.so.1" 2>/dev/null
-
-# Add the directory to LD_LIBRARY_PATH (adjust path as needed)
-export LD_LIBRARY_PATH=/usr/lib/nvidia:$LD_LIBRARY_PATH
-
-# Or add it permanently to your shell profile (~/.bashrc / ~/.zshrc)
-echo 'export LD_LIBRARY_PATH=/usr/lib/nvidia:$LD_LIBRARY_PATH' >> ~/.bashrc
+nvidia-smi
 ```
+
+If you get `command not found`, install the driver:
+
+```bash
+# Arch / Manjaro
+sudo pacman -S nvidia nvidia-utils
+# Then reboot — the kernel module must be loaded
+
+# Ubuntu / Debian (pick the version matching your kernel)
+sudo apt install nvidia-driver-535
+# Then reboot
+
+# Fedora
+sudo dnf install akmod-nvidia
+# Then reboot
+```
+
+After rebooting, confirm the driver is loaded:
+
+```bash
+nvidia-smi          # should show your GPU, driver version, and CUDA version
+lsmod | grep nvidia # should list nvidia, nvidia_modeset, etc.
+```
+
+Then re-run `python verify_cuda.py`.
+
+---
+
+### `nvidia-smi` works but TensorFlow cannot see the GPU
+
+`tensorflow[and-cuda]` bundles cuDNN, cuFFT, cuBLAS etc. as pip wheels, but
+it still calls `dlopen("libcuda.so.1")` at import time to reach the NVIDIA
+driver. That file comes from the system driver package, not from any pip or
+conda install. When using a **conda environment**, conda prepends its own
+`$CONDA_PREFIX/lib` to `LD_LIBRARY_PATH`, which can push `/usr/lib` (where
+`libcuda.so.1` lives on Arch/Garuda) out of TF's search window.
+
+**Permanent fix — use the included activation hook script (recommended):**
+
+```bash
+conda activate nightcore-analyzer
+bash setup_conda_libcuda.sh
+conda deactivate && conda activate nightcore-analyzer
+python verify_cuda.py
+```
+
+This writes a conda activation script that prepends `/usr/lib` to
+`LD_LIBRARY_PATH` every time the environment is activated. It is automatically
+undone on `conda deactivate`.
+
+**Quick one-off test (no permanent change):**
+
+```bash
+export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+python verify_cuda.py
+```
+
+**Verify `libcuda.so.1` is present first:**
+
+```bash
+find /usr -name "libcuda.so.1" 2>/dev/null
+# Expected on Arch/Garuda: /usr/lib/libcuda.so.1
+# Expected on Ubuntu/Debian: /usr/lib/x86_64-linux-gnu/libcuda.so.1
+```
+
+Adjust the path in `setup_conda_libcuda.sh` if your distro puts the library
+somewhere else.
+
+**Also check for a conda cuda-toolkit conflict:**
+
+If you previously ran `conda install cuda-toolkit` or
+`conda install -c nvidia cudnn`, you have both conda-managed CUDA 13 and
+pip-managed CUDA 12 in the same environment — a known source of subtle
+failures. The cleanest fix is to recreate the environment from scratch:
+
+```bash
+conda deactivate
+conda env remove -n nightcore-analyzer
+conda env create -f environment.yml
+conda activate nightcore-analyzer
+pip install "setuptools<81"
+pip install --no-build-isolation crepe
+bash setup_conda_libcuda.sh
+conda deactivate && conda activate nightcore-analyzer
+python verify_cuda.py
+```
+
+Do **not** run `conda install cuda-toolkit` or `conda install cudnn` into
+this environment — `tensorflow[and-cuda]` supplies its own CUDA 12 wheels.
 
 ### TensorFlow version mismatch
 
