@@ -10,7 +10,8 @@
 # Activate:
 #   conda activate nightcore-analyzer
 #
-# Install CREPE (requires --no-build-isolation due to legacy setup.py):
+# Install CREPE (conda-forge setuptools lacks pkg_resources; fix with pip):
+#   pip install --upgrade setuptools
 #   pip install --no-build-isolation crepe
 #
 # Verify:
@@ -32,7 +33,7 @@ dependencies:
   # Core Python runtime
   - python=3.11
   - pip
-  - setuptools             # needed for CREPE's legacy setup.py (pkg_resources)
+  - setuptools             # base install; pip will upgrade it to get pkg_resources
 
   # NumPy/SciPy pinned below 2.x for TensorFlow/librosa compatibility
   - numpy>=1.24,<2.0
@@ -50,10 +51,11 @@ dependencies:
     # TensorFlow with bundled CUDA wheels
     - "tensorflow[and-cuda]>=2.15.0,<2.17.0"
 
-    # NOTE: CREPE is NOT listed here — it must be installed separately
-    # after env creation with: pip install --no-build-isolation crepe
-    # (Its legacy setup.py imports pkg_resources, which breaks pip's
-    # build isolation on modern Python/setuptools.)
+    # NOTE: CREPE is NOT listed here — conda-forge's setuptools does not
+    # put pkg_resources on the Python path properly, causing CREPE's legacy
+    # setup.py to fail even with --no-build-isolation.
+    # Install CREPE manually after env creation:
+    #   pip install --upgrade setuptools && pip install --no-build-isolation crepe
 
     # Audio I/O — pip names are unambiguous; conda-forge names vary by version
     - "librosa>=0.10.1"
