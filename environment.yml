@@ -1,0 +1,69 @@
+# ============================================================
+# Nightcore Audio Analysis Tool — Conda Environment
+# ============================================================
+# Recommended approach for Arch-derivative Linux systems where
+# getting CUDA libraries on PATH can be fragile with plain pip.
+#
+# Create environment:
+#   conda env create -f environment.yml
+#
+# Activate:
+#   conda activate nightcore-analyzer
+#
+# Verify:
+#   python verify_cuda.py
+#
+# Remove environment (uninstall):
+#   conda deactivate
+#   conda env remove -n nightcore-analyzer
+# ============================================================
+
+name: nightcore-analyzer
+
+channels:
+  - conda-forge
+  - nvidia          # provides cuda-toolkit, cudnn packages
+  - defaults
+
+dependencies:
+  # Core Python runtime
+  - python=3.11
+  - pip
+
+  # NumPy/SciPy pinned below 2.x for TensorFlow/librosa compatibility
+  - numpy>=1.24,<2.0
+  - scipy>=1.11
+
+  # Audio analysis (conda-forge builds link against system libsndfile)
+  - librosa>=0.10.1
+  - soundfile>=0.12.1
+  - audioread>=3.0.0
+
+  # Visualisation
+  - matplotlib>=3.8.0
+
+  # Qt platform (conda-forge provides complete Qt6 stack)
+  - pyqt>=6.6.0
+
+  # Progress bars
+  - tqdm>=4.66.0
+
+  # Install remaining packages via pip (no conda packages available)
+  - pip:
+    # TensorFlow with bundled CUDA wheels
+    # If conda-forge cuda-toolkit is installed, TF will prefer it;
+    # the [and-cuda] extra is a safe fallback.
+    - "tensorflow[and-cuda]>=2.15.0,<2.17.0"
+
+    # CREPE pitch detector (TF-based)
+    - "crepe>=0.0.16"
+
+    # Rubber Band Python bindings
+    # Requires rubberband binary: sudo pacman -S rubberband
+    - "pyrubberband>=0.3.0"
+
+    # Fast real-time Qt plotting
+    - "pyqtgraph>=0.13.4"
+
+    # PyQt6 (pip version needed alongside conda pyqt for PyQt6 specifically)
+    - "PyQt6>=6.6.0"

@@ -1,0 +1,46 @@
+# ============================================================
+# Nightcore Audio Analysis Tool — Python Dependencies
+# ============================================================
+# Install into an isolated virtualenv or conda env.
+# See README.md for full environment setup instructions.
+#
+# IMPORTANT: TensorFlow must see your NVIDIA GPU before
+# proceeding past Step 1. Run verify_cuda.py to confirm.
+# ============================================================
+
+# --- Machine Learning / GPU -------------------------------------------
+# Bundles cuDNN + CUDA runtime as Python wheels (no system CUDA install
+# required for TF itself, but the NVIDIA driver MUST be installed).
+tensorflow[and-cuda]>=2.15.0,<2.17.0
+
+# --- Pitch Detection (CREPE) ------------------------------------------
+# CREPE uses TensorFlow internally; must be installed after TF.
+crepe>=0.0.16
+
+# --- Audio I/O & Analysis ---------------------------------------------
+librosa>=0.10.1
+soundfile>=0.12.1          # backend used by librosa for most formats
+audioread>=3.0.0           # fallback decoder (MP3, AAC, etc.)
+
+# --- Signal Processing ------------------------------------------------
+numpy>=1.24.0,<2.0.0       # pin below 2.x until TF/librosa fully support it
+scipy>=1.11.0
+
+# --- Time-stretching / Pitch-shifting ---------------------------------
+# Python bindings for the Rubber Band library.
+# Requires the 'rubberband' binary in PATH — install via OS package manager:
+#   Arch/Manjaro : sudo pacman -S rubberband
+#   Ubuntu/Debian: sudo apt install rubberband-cli
+#   macOS        : brew install rubberband
+pyrubberband>=0.3.0
+
+# --- GUI (PyQt6) ------------------------------------------------------
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+
+# --- Visualisation ----------------------------------------------------
+matplotlib>=3.8.0
+pyqtgraph>=0.13.4          # fast real-time plotting embedded in Qt
+
+# --- Utilities --------------------------------------------------------
+tqdm>=4.66.0               # progress bars for CLI usage
