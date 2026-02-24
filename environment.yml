@@ -34,24 +34,25 @@ dependencies:
   - numpy>=1.24,<2.0
   - scipy>=1.11
 
-  # Audio analysis
-  - librosa>=0.10.1
-  - python-soundfile>=0.12.1   # conda-forge name for the soundfile package
-  - audioread>=3.0.0
-
   # Visualisation
   - matplotlib>=3.8.0
 
   # Progress bars
   - tqdm>=4.66.0
 
-  # Install remaining packages via pip (unavailable or unreliable via conda)
+  # Everything else via pip — avoids conda-forge package name ambiguity
+  # for audio libs and pip-only packages
   - pip:
     # TensorFlow with bundled CUDA wheels
     - "tensorflow[and-cuda]>=2.15.0,<2.17.0"
 
     # CREPE pitch detector (TF-based)
     - "crepe>=0.0.16"
+
+    # Audio I/O — pip names are unambiguous; conda-forge names vary by version
+    - "librosa>=0.10.1"
+    - "soundfile>=0.12.1"
+    - "audioread>=3.0.0"
 
     # Rubber Band Python bindings
     # Requires rubberband binary: sudo pacman -S rubberband
