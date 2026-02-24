@@ -45,10 +45,23 @@ dependencies:
   # Progress bars
   - tqdm>=4.66.0
 
+  # ── IMPORTANT: do NOT run `conda install cuda-toolkit` or
+  # `conda install -c nvidia cudnn` into this environment.
+  # tensorflow[and-cuda] (below) bundles its own CUDA 12 wheels via pip
+  # (nvidia-cuda-runtime-cu12, nvidia-cudnn-cu12, etc.).  Installing a
+  # conda-managed CUDA 13 toolkit alongside those pip wheels creates a
+  # version conflict (libcudart.so.13 vs libcudart.so.12) and makes the
+  # environment very hard to debug.  If you already did this, recreate
+  # the environment from scratch.
+
   # Everything else via pip — avoids conda-forge package name ambiguity
   # for audio libs and pip-only packages
   - pip:
-    # TensorFlow with bundled CUDA wheels
+    # TensorFlow with bundled CUDA 12 wheels.
+    # NOTE: libcuda.so.1 (driver stub) still comes from the system NVIDIA
+    # driver package and must be on LD_LIBRARY_PATH.  Run the one-time
+    # helper after env creation:
+    #   bash setup_conda_libcuda.sh
     - "tensorflow[and-cuda]>=2.15.0,<2.17.0"
 
     # NOTE: CREPE is NOT listed here — setuptools 81+ removed pkg_resources,
