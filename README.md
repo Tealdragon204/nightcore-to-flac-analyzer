@@ -254,7 +254,14 @@ undone on `conda deactivate`.
 **Quick one-off test (no permanent change):**
 
 ```bash
+# bash / zsh
 export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+python verify_cuda.py
+```
+
+```fish
+# fish shell — export/= syntax does NOT work; use set -gx
+set -gx LD_LIBRARY_PATH /usr/lib:$LD_LIBRARY_PATH
 python verify_cuda.py
 ```
 

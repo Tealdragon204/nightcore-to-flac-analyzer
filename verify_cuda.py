@@ -192,14 +192,71 @@ def _tf_gpu_detect():
     import tensorflow as tf
     gpus = tf.config.list_physical_devices("GPU")
     if not gpus:
-        raise RuntimeError(
-            "No GPU devices detected. nvidia-smi passed so the driver IS\n"
-            "      installed, but TF cannot find libcuda.so.1 on its library\n"
-            "      search path. Fix:\n"
-            "        find /usr /opt -name 'libcuda.so.1' 2>/dev/null\n"
-            "        export LD_LIBRARY_PATH=<dir-found-above>:$LD_LIBRARY_PATH\n"
-            "      See README.md § Troubleshooting CUDA for full steps."
-        )
+        # --- diagnostics to pinpoint why libcuda.so.1 is missing ---
+        import ctypes, os, subprocess as sp
+
+        lines = ["No GPU devices detected — running diagnostics:\n"]
+
+        # 1. Current LD_LIBRARY_PATH
+        ldlp = os.environ.get("LD_LIBRARY_PATH", "<not set>")
+        lines.append(f"      LD_LIBRARY_PATH = {ldlp}")
+
+        # 2. Try dlopen("libcuda.so.1") directly
+        try:
+            ctypes.CDLL("libcuda.so.1")
+            lines.append("      ctypes.CDLL('libcuda.so.1') → OK  (TF should have found it too)")
+        except OSError as e:
+            lines.append(f"      ctypes.CDLL('libcuda.so.1') → FAILED: {e}")
+
+        # 3. ldconfig cache
+        try:
+            r = sp.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=5)
+            hits = [l.strip() for l in r.stdout.splitlines() if "libcuda" in l]
+            if hits:
+                lines.append("      ldconfig -p | grep libcuda:")
+                for h in hits:
+                    lines.append(f"        {h}")
+            else:
+                lines.append(
+                    "      ldconfig -p | grep libcuda → EMPTY  "
+                    "(cache stale? run: sudo ldconfig)"
+                )
+        except Exception:
+            pass
+
+        # 4. Warn about LD_PRELOAD (e.g. NoMachine NX)
+        ldp = os.environ.get("LD_PRELOAD", "")
+        if ldp:
+            lines.append(
+                f"      LD_PRELOAD = {ldp}\n"
+                "        (a preloaded library may interfere — try unsetting it)"
+            )
+
+        # 5. Actionable fix (detect shell)
+        shell = os.environ.get("SHELL", "")
+        if "fish" in shell:
+            lines.append(
+                "\n      Quick fix (fish shell):\n"
+                "        set -gx LD_LIBRARY_PATH /usr/lib:$LD_LIBRARY_PATH\n"
+                "        python verify_cuda.py\n"
+                "\n      Permanent fix:\n"
+                "        bash setup_conda_libcuda.sh   # writes fish + bash hooks\n"
+                "        conda deactivate && conda activate nightcore-analyzer\n"
+                "        python verify_cuda.py"
+            )
+        else:
+            lines.append(
+                "\n      Quick fix:\n"
+                "        export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH\n"
+                "        python verify_cuda.py\n"
+                "\n      Permanent fix:\n"
+                "        bash setup_conda_libcuda.sh\n"
+                "        conda deactivate && conda activate nightcore-analyzer\n"
+                "        python verify_cuda.py"
+            )
+
+        raise RuntimeError("\n      ".join(lines))
+
     names = [g.name for g in gpus]
     return f"{len(gpus)} GPU(s): {names}"
 gpu_ok = _check("GPU device detection (CRITICAL)", _tf_gpu_detect)
