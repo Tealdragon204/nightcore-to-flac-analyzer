@@ -159,8 +159,22 @@ _section("TensorFlow — CRITICAL: GPU / CUDA checks")
 
 def _tf_import():
     import tensorflow as tf  # noqa: F401 — side-effect import
-    return tf.__version__
-tf_version = _check("Import + version", _tf_import)
+    import importlib.metadata as _m
+    ver = tf.__version__
+    # Validate version is in the expected range [2.15, 2.17)
+    parts = [int(x) for x in ver.split(".")[:2]]
+    if parts < [2, 15]:
+        raise RuntimeError(
+            f"TensorFlow {ver} is too old — need >=2.15.0. "
+            "Run: pip install --upgrade 'tensorflow[and-cuda]>=2.15.0,<2.17.0'"
+        )
+    if parts >= [2, 17]:
+        raise RuntimeError(
+            f"TensorFlow {ver} is newer than the tested range (<2.17). "
+            "Downgrade with: pip install 'tensorflow[and-cuda]>=2.15.0,<2.17.0'"
+        )
+    return ver
+tf_version = _check("Import + version (need >=2.15,<2.17)", _tf_import)
 
 def _tf_cuda_build():
     import tensorflow as tf
@@ -169,8 +183,39 @@ def _tf_cuda_build():
             "TensorFlow is NOT built with CUDA support. "
             "Install the CUDA-enabled build: pip install 'tensorflow[and-cuda]'"
         )
-    return "Built with CUDA support"
+    # Show the CUDA version TF was compiled against
+    try:
+        info = tf.sysconfig.get_build_info()
+        cuda_ver  = info.get("cuda_version",  "?")
+        cudnn_ver = info.get("cudnn_version", "?")
+        return f"CUDA {cuda_ver} / cuDNN {cudnn_ver}"
+    except Exception:
+        return "Built with CUDA support"
 _check("Built with CUDA", _tf_cuda_build)
+
+def _nvidia_wheel_versions():
+    """Report installed nvidia-* pip wheel versions (the bundled CUDA 12 libs)."""
+    import importlib.metadata as m
+    wanted = [
+        "nvidia-cuda-runtime-cu12",
+        "nvidia-cublas-cu12",
+        "nvidia-cudnn-cu12",
+        "nvidia-cufft-cu12",
+    ]
+    found = {}
+    for pkg in wanted:
+        try:
+            found[pkg] = m.version(pkg)
+        except m.PackageNotFoundError:
+            found[pkg] = "NOT INSTALLED"
+    missing = [k for k, v in found.items() if v == "NOT INSTALLED"]
+    if missing:
+        raise RuntimeError(
+            "Missing nvidia pip wheels (should be installed by tensorflow[and-cuda]):\n"
+            + "\n".join(f"          {p}" for p in missing)
+        )
+    return "  ".join(f"{k.split('-')[1]}={v}" for k, v in found.items())
+_check("nvidia pip wheels (CUDA 12)", _nvidia_wheel_versions)
 
 def _nvidia_smi():
     r = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
@@ -201,12 +246,27 @@ def _tf_gpu_detect():
         ldlp = os.environ.get("LD_LIBRARY_PATH", "<not set>")
         lines.append(f"      LD_LIBRARY_PATH = {ldlp}")
 
-        # 2. Try dlopen("libcuda.so.1") directly
+        # 2. Try dlopen("libcuda.so.1") with both lazy and eager binding.
+        #    TF uses RTLD_NOW|RTLD_GLOBAL; ctypes default is RTLD_LAZY|RTLD_LOCAL.
+        #    If lazy succeeds but eager fails, an LD_PRELOAD conflict is the cause.
+        lazy_ok = False
         try:
             ctypes.CDLL("libcuda.so.1")
-            lines.append("      ctypes.CDLL('libcuda.so.1') → OK  (TF should have found it too)")
+            lines.append("      ctypes.CDLL('libcuda.so.1') RTLD_LAZY  → OK")
+            lazy_ok = True
         except OSError as e:
-            lines.append(f"      ctypes.CDLL('libcuda.so.1') → FAILED: {e}")
+            lines.append(f"      ctypes.CDLL('libcuda.so.1') RTLD_LAZY  → FAILED: {e}")
+
+        try:
+            ctypes.CDLL("libcuda.so.1", mode=ctypes.RTLD_GLOBAL)
+            lines.append("      ctypes.CDLL('libcuda.so.1') RTLD_GLOBAL → OK")
+        except OSError as e:
+            lines.append(f"      ctypes.CDLL('libcuda.so.1') RTLD_GLOBAL → FAILED: {e}")
+            if lazy_ok:
+                lines.append(
+                    "      ↑ LAZY succeeded but GLOBAL failed — an LD_PRELOAD library\n"
+                    "        is providing conflicting symbols (see LD_PRELOAD below)."
+                )
 
         # 3. ldconfig cache
         try:
@@ -227,9 +287,19 @@ def _tf_gpu_detect():
         # 4. Warn about LD_PRELOAD (e.g. NoMachine NX)
         ldp = os.environ.get("LD_PRELOAD", "")
         if ldp:
+            is_nx = "nx" in ldp.lower() or "nomachine" in ldp.lower()
+            nx_note = (
+                "\n        NoMachine NX detected — its libnxegl.so intercepts EGL/GL\n"
+                "        symbols; CUDA's eager linker (RTLD_NOW) hits a conflict.\n"
+                "        Run without the preload to confirm:\n"
+                "          env -u LD_PRELOAD python verify_cuda.py\n"
+                "        Permanent fix — add to your analyzer launch script:\n"
+                "          unset LD_PRELOAD   # bash/zsh\n"
+                "          set -e LD_PRELOAD  # fish"
+            ) if is_nx else ""
             lines.append(
                 f"      LD_PRELOAD = {ldp}\n"
-                "        (a preloaded library may interfere — try unsetting it)"
+                f"        (preloaded library may supply conflicting EGL/GL symbols){nx_note}"
             )
 
         # 5. Actionable fix (detect shell)
