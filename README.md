@@ -189,6 +189,46 @@ Expected output on a working system (abbreviated):
 
 ## Troubleshooting CUDA
 
+### `nvidia-smi` not found — NVIDIA driver not installed
+
+This is the most common cause of the GPU CRITICAL failure. TensorFlow (even
+`tensorflow[and-cuda]`, which bundles its own CUDA toolkit) still requires the
+NVIDIA driver's user-space library `libcuda.so.1` to be present on the system.
+That library ships with the driver package, not with any conda or pip install.
+
+**Check first:**
+
+```bash
+nvidia-smi
+```
+
+If you get `command not found`, install the driver:
+
+```bash
+# Arch / Manjaro
+sudo pacman -S nvidia nvidia-utils
+# Then reboot — the kernel module must be loaded
+
+# Ubuntu / Debian (pick the version matching your kernel)
+sudo apt install nvidia-driver-535
+# Then reboot
+
+# Fedora
+sudo dnf install akmod-nvidia
+# Then reboot
+```
+
+After rebooting, confirm the driver is loaded:
+
+```bash
+nvidia-smi          # should show your GPU, driver version, and CUDA version
+lsmod | grep nvidia # should list nvidia, nvidia_modeset, etc.
+```
+
+Then re-run `python verify_cuda.py`.
+
+---
+
 ### `nvidia-smi` works but TensorFlow cannot see the GPU
 
 TensorFlow's bundled CUDA wheels need to locate the NVIDIA driver library. On Arch-derivative systems with custom driver paths, set:

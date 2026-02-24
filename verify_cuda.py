@@ -172,15 +172,33 @@ def _tf_cuda_build():
     return "Built with CUDA support"
 _check("Built with CUDA", _tf_cuda_build)
 
+def _nvidia_smi():
+    r = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            "nvidia-smi not found or failed — NVIDIA driver is not installed.\n"
+            "      Arch/Manjaro : sudo pacman -S nvidia nvidia-utils\n"
+            "      Ubuntu/Debian: sudo apt install nvidia-driver-535\n"
+            "      After install: reboot, then re-run this script.\n"
+            "      libcuda.so.1 (required by TensorFlow) ships with this driver."
+        )
+    for line in r.stdout.splitlines():
+        if "Driver Version" in line:
+            return line.strip()
+    return r.stdout.strip().splitlines()[0]
+_check("nvidia-smi (driver installed)", _nvidia_smi)
+
 def _tf_gpu_detect():
     import tensorflow as tf
     gpus = tf.config.list_physical_devices("GPU")
     if not gpus:
         raise RuntimeError(
-            "No GPU devices detected. Check:\n"
-            "      • NVIDIA drivers: nvidia-smi\n"
-            "      • CUDA libraries visible to TF: see README troubleshooting\n"
-            "      • LD_LIBRARY_PATH or /etc/ld.so.conf includes CUDA lib path"
+            "No GPU devices detected. nvidia-smi passed so the driver IS\n"
+            "      installed, but TF cannot find libcuda.so.1 on its library\n"
+            "      search path. Fix:\n"
+            "        find /usr /opt -name 'libcuda.so.1' 2>/dev/null\n"
+            "        export LD_LIBRARY_PATH=<dir-found-above>:$LD_LIBRARY_PATH\n"
+            "      See README.md § Troubleshooting CUDA for full steps."
         )
     names = [g.name for g in gpus]
     return f"{len(gpus)} GPU(s): {names}"
