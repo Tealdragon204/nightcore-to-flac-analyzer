@@ -103,6 +103,15 @@ class AnalysisResult:
                                 rbargs={'--pitch': str(pitch_semitones)})
     """
 
+    # ── raw per-window data (optional, populated by pipeline) ─────────────────
+    # These are the raw per-window estimates before consensus, used by the GUI
+    # histogram widget.  None means the pipeline did not store them (e.g. when
+    # called from the CLI with no GUI attached).
+    src_pitches_raw: Optional[List[Optional[float]]] = None
+    nc_pitches_raw:  Optional[List[Optional[float]]] = None
+    src_tempos_raw:  Optional[List[Optional[float]]] = None
+    nc_tempos_raw:   Optional[List[Optional[float]]] = None
+
     def __str__(self) -> str:
         ci_t = self.tempo_ci
         ci_p = self.pitch_ci
@@ -249,4 +258,8 @@ def build_result(
         n_source_tempo_windows=len(src_t),
         n_nc_tempo_windows=len(nc_t),
         rubberband=rubberband,
+        src_pitches_raw=list(src_pitches),
+        nc_pitches_raw=list(nc_pitches),
+        src_tempos_raw=list(src_tempos),
+        nc_tempos_raw=list(nc_tempos),
     )

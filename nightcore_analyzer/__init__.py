@@ -19,6 +19,8 @@ Quick start (Python API):
 
 from .pipeline import run
 from .consensus import AnalysisResult
+from . import export
+from . import session
 
-__version__ = "0.2.0"
-__all__ = ["run", "AnalysisResult"]
+__version__ = "0.3.0"
+__all__ = ["run", "AnalysisResult", "export", "session"]

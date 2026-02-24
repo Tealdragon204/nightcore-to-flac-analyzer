@@ -344,34 +344,23 @@ nightcore-to-flac-analyzer/
 ├── LICENSE
 ├── README.md
 │
-│   # Step 2 (current):
 ├── nightcore_analyzer/
-│   ├── __init__.py             # package root; exposes run() and AnalysisResult
-│   ├── __main__.py             # python -m nightcore_analyzer → Step 3 placeholder
+│   ├── __init__.py             # package root; exposes run(), AnalysisResult, export, session
+│   ├── __main__.py             # python -m nightcore_analyzer → launches PyQt6 GUI
 │   ├── cli.py                  # python -m nightcore_analyzer.cli  (fully working)
 │   ├── pipeline.py             # top-level orchestrator
 │   ├── io.py                   # audio loading, resampling, windowing, energy gating
 │   ├── pitch.py                # CREPE per-window F0 estimation
 │   ├── tempo.py                # librosa per-window BPM estimation
-│   └── consensus.py            # median/bootstrap ratio, CI, classification, RB params
-│
-│   # Step 3 (pending):
-├── nightcore_analyzer/
+│   ├── consensus.py            # median/bootstrap ratio, CI, classification, RB params
+│   ├── session.py              # session persistence (last directory, parameters)
+│   ├── export.py               # JSON / CSV result export
 │   └── gui/
-│       ├── __init__.py
-│       ├── main_window.py      # PyQt6 main window + file pickers
-│       └── worker.py           # QThread worker wrapping the pipeline
-│
-│   # Step 4 (pending):
-│       └── histogram_widget.py # per-window estimate visualisation
-│
-│   # Added in Step 5:
-├── gui/
-│   └── results_panel.py    # ratios, CIs, classification, rubberband params
-│
-│   # Added in Step 6:
-├── session.py              # session persistence (last directory, etc.)
-└── export.py               # JSON / CSV result logging
+│       ├── __init__.py         # exposes MainWindow
+│       ├── main_window.py      # PyQt6 main window + file pickers + menu
+│       ├── worker.py           # QThread worker wrapping the pipeline
+│       ├── histogram_widget.py # per-window pitch/tempo histograms (matplotlib)
+│       └── results_panel.py    # ratios, CIs, classification, Rubber Band params
 ```
 
 ---
@@ -381,23 +370,31 @@ nightcore-to-flac-analyzer/
 | Step | Status | Description |
 |------|--------|-------------|
 | 1 | ✅ Complete | Environment setup, CUDA verification |
-| **2** | **✅ Complete** | Core analysis module — CLI-testable windowed pipeline |
-| 3 | Pending | PyQt6 GUI shell — file pickers, run button, worker thread |
-| 4 | Pending | Results visualisation — per-window histograms |
-| 5 | Pending | Output panel — ratios, CIs, classification, Rubber Band params |
-| 6 | Pending | QoL — session persistence, JSON/CSV export, batch mode |
+| 2 | ✅ Complete | Core analysis module — CLI-testable windowed pipeline |
+| 3 | ✅ Complete | PyQt6 GUI shell — file pickers, run button, worker thread |
+| 4 | ✅ Complete | Results visualisation — per-window histograms |
+| 5 | ✅ Complete | Output panel — ratios, CIs, classification, Rubber Band params |
+| 6 | ✅ Complete | QoL — session persistence, JSON/CSV export |
 
 ---
 
 ## Usage
 
-Steps 1 and 2 are complete.  The CLI is fully operational.  GUI (Step 3) is not yet implemented.
+### GUI mode (recommended)
 
 ```bash
-# GUI mode (Steps 3+) — not yet implemented
 python -m nightcore_analyzer
+```
 
-# CLI mode
+Opens the PyQt6 interface.  Select the nightcore and source files with the
+file pickers, adjust analysis parameters if needed, then click **Run Analysis**.
+Results appear in the **Results** tab (ratios, CIs, classification, Rubber Band
+command) and the **Histograms** tab (per-window distributions).  Use
+**File → Save results as JSON/CSV** to export.
+
+### CLI mode
+
+```bash
 # Always quote paths — spaces and parentheses (common in music filenames) break
 # unquoted shell arguments, especially in fish where (...) is command substitution.
 python -m nightcore_analyzer.cli \
@@ -405,6 +402,8 @@ python -m nightcore_analyzer.cli \
     --source    "/path/to/original (Radio Edit).flac" \
     --output    results.json
 ```
+
+Run `python -m nightcore_analyzer.cli --help` for all options.
 
 ---
 
