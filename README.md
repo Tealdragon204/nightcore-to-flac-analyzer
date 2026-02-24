@@ -133,9 +133,9 @@ conda env create -f environment.yml
 conda activate nightcore-analyzer
 
 # 3. Install CREPE — must be done separately.
-#    conda-forge's setuptools does not expose pkg_resources to Python imports,
-#    so CREPE's legacy setup.py fails. Force a pip-managed setuptools first:
-pip install --upgrade setuptools
+#    setuptools 81+ removed pkg_resources entirely; CREPE's 2020-era setup.py
+#    imports it. Pin setuptools<81, then install CREPE without build isolation:
+pip install "setuptools<81"
 pip install --no-build-isolation crepe
 
 # 4. (Optional) If TensorFlow still cannot see the GPU after conda setup,
