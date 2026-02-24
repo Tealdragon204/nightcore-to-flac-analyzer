@@ -126,11 +126,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── format output ─────────────────────────────────────────────────────────
     output = {
-        "classification": result.classification,
-        "tempo_ratio":    round(result.tempo_ratio, 8),
-        "pitch_ratio":    round(result.pitch_ratio, 8),
-        "tempo_ci_95":    [round(result.tempo_ci[0], 8), round(result.tempo_ci[1], 8)],
-        "pitch_ci_95":    [round(result.pitch_ci[0], 8), round(result.pitch_ci[1], 8)],
+        "classification":  result.classification,
+        "tempo_ratio":     round(result.tempo_ratio, 8),
+        "tempo_method":    result.tempo_method,
+        "duration_ratio":  round(result.duration_ratio, 8),
+        "pitch_ratio":     round(result.pitch_ratio, 8),
+        "tempo_ci_95":     [round(result.tempo_ci[0], 8), round(result.tempo_ci[1], 8)],
+        "pitch_ci_95":     [round(result.pitch_ci[0], 8), round(result.pitch_ci[1], 8)],
         "windows_used": {
             "source_pitch":    result.n_source_pitch_windows,
             "nightcore_pitch": result.n_nc_pitch_windows,

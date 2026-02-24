@@ -7,12 +7,23 @@ Each file independently produces a list of per-window pitch estimates and a
 list of per-window tempo estimates.  The two lists need not be the same length
 (because windows from different files are never aligned).
 
-For each quantity (pitch, tempo) we compute:
+For pitch we compute:
 
-  ratio = median(nightcore_values) / median(source_values)
+  pitch_ratio = median(nightcore_pitches) / median(source_pitches)
 
 and use non-parametric bootstrap resampling to obtain a 95 % confidence
 interval on that ratio.
+
+For tempo we use a two-stage approach:
+
+  1. Duration ratio (src_samples / nc_samples) — exact, always available.
+     Nightcore is produced by speeding up the entire file, so the file-length
+     ratio IS the tempo ratio with sample-accurate precision.
+
+  2. Per-window beat-tracking ratio — noisier but provides an independent
+     cross-check.  If it agrees with the duration ratio within
+     DURATION_BEAT_AGREE_TOL (15 %), the two are blended (weighted 2:1 in
+     favour of duration).  If they disagree, the duration ratio wins.
 
 Classification
 --------------
@@ -49,10 +60,11 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-N_BOOTSTRAP: int        = 2000   # bootstrap resamples for CI
-CI_LEVEL: float         = 0.95   # confidence level (95 %)
-PURE_NC_TOLERANCE: float = 0.02  # ratio difference below this → same factor
-MIN_VALID: int           = 3     # minimum valid estimates to attempt consensus
+N_BOOTSTRAP: int             = 2000   # bootstrap resamples for CI
+CI_LEVEL: float              = 0.95   # confidence level (95 %)
+PURE_NC_TOLERANCE: float     = 0.02   # ratio difference below this → same factor
+MIN_VALID: int               = 3      # minimum valid estimates to attempt consensus
+DURATION_BEAT_AGREE_TOL: float = 0.15 # 15 % — beyond this the beat ratio is discarded
 
 
 # ── result container ──────────────────────────────────────────────────────────
@@ -87,6 +99,21 @@ class AnalysisResult:
     n_source_tempo_windows: int
     n_nc_tempo_windows: int
 
+    # ── duration / tempo provenance ───────────────────────────────────────────
+    duration_ratio: float
+    """
+    Exact tempo ratio derived from file durations: src_samples / nc_samples.
+    This is ground truth for nightcore (the speed-up affects the whole file).
+    """
+
+    tempo_method: str
+    """
+    How tempo_ratio was determined.
+      'duration'   — beat-tracking was absent or disagreed; duration ratio used.
+      'combined'   — beat-tracking agreed with duration; weighted 2:1 blend.
+      'beat_track' — (legacy) beat-tracking only, no duration available.
+    """
+
     # ── reconstruction parameters ─────────────────────────────────────────────
     rubberband: dict = field(default_factory=dict)
     """
@@ -109,12 +136,15 @@ class AnalysisResult:
         rb   = self.rubberband
         return (
             f"Classification  : {self.classification}\n"
-            f"Tempo ratio     : {self.tempo_ratio:.6f}  "
+            f"Tempo ratio     : {self.tempo_ratio:.6f}"
             f"  95% CI [{ci_t[0]:.6f}, {ci_t[1]:.6f}]"
-            f"  (from {self.n_source_tempo_windows} src / {self.n_nc_tempo_windows} nc windows)\n"
-            f"Pitch ratio     : {self.pitch_ratio:.6f}  "
+            f"  method={self.tempo_method}  duration_ratio={self.duration_ratio:.6f}\n"
+            f"  beat-track windows: {self.n_source_tempo_windows} src"
+            f" / {self.n_nc_tempo_windows} nc\n"
+            f"Pitch ratio     : {self.pitch_ratio:.6f}"
             f"  95% CI [{ci_p[0]:.6f}, {ci_p[1]:.6f}]"
-            f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc windows)\n"
+            f"  (from {self.n_source_pitch_windows} src"
+            f" / {self.n_nc_pitch_windows} nc windows)\n"
             f"Rubber Band     : --time {rb.get('time_ratio', '?'):.6f}"
             f"  --pitch {rb.get('pitch_semitones', '?'):.4f} st\n"
             f"CLI example     : {rb.get('cli_command', '')}"
@@ -156,6 +186,34 @@ def _bootstrap_ratio(
     return point, (lo, hi)
 
 
+def _reconcile_tempo(
+    beat_ratio: float,
+    beat_ci: Tuple[float, float],
+    duration_ratio: float,
+    tol: float = DURATION_BEAT_AGREE_TOL,
+) -> Tuple[float, Tuple[float, float], str]:
+    """
+    Reconcile the per-window beat-tracking ratio with the exact duration ratio.
+
+    Duration ratio is ground truth: the nightcore speed-up shifts every sample
+    equally, so src_samples / nc_samples == tempo_ratio exactly.  Beat tracking
+    is a noisier secondary estimator.
+
+    Returns (tempo_ratio, tempo_ci, tempo_method).
+    """
+    rel_diff = abs(beat_ratio - duration_ratio) / max(duration_ratio, 1e-9)
+
+    if rel_diff <= tol:
+        # They agree — weighted average (duration counts 2x; it's exact)
+        combined = (2.0 * duration_ratio + beat_ratio) / 3.0
+        return combined, beat_ci, "combined"
+    else:
+        # Beat tracking unreliable for this content; use duration as ground truth.
+        # CI reflects only sample-count quantization (< 1 sample / 22050 Hz).
+        d_ci = (duration_ratio * 0.9995, duration_ratio * 1.0005)
+        return duration_ratio, d_ci, "duration"
+
+
 def _classify(
     tempo_ratio: float,
     pitch_ratio: float,
@@ -174,7 +232,9 @@ def _classify(
     if ratio_diff > tol:
         return "independent_pitch_shift"
 
-    if tempo_ratio > 1.0 + tol and ratio_diff < -tol:
+    # Tempo is up but pitch is essentially unchanged → time-stretch without pitch shift.
+    # Fix: check pitch_ratio ≈ 1.0, not pitch_ratio < tempo_ratio.
+    if tempo_ratio > 1.0 + tol and abs(pitch_ratio - 1.0) <= tol:
         return "time_stretch_only"
 
     return "ambiguous"
@@ -205,6 +265,8 @@ def build_result(
     nc_pitches:  List[Optional[float]],
     src_tempos:  List[Optional[float]],
     nc_tempos:   List[Optional[float]],
+    *,
+    duration_ratio: float,
 ) -> AnalysisResult:
     """
     Run the full consensus step and return an :class:`AnalysisResult`.
@@ -213,6 +275,7 @@ def build_result(
     ----------
     src_pitches, nc_pitches : per-window median F0 (Hz) or None
     src_tempos,  nc_tempos  : per-window BPM estimate or None
+    duration_ratio          : src_samples / nc_samples (exact tempo ground truth)
     """
     src_p = _valid(src_pitches)
     nc_p  = _valid(nc_pitches)
@@ -226,14 +289,20 @@ def build_result(
             "  Try: reducing --window size, lowering --energy-gate, "
             "or checking that both files contain music."
         )
+
+    # ── tempo: duration ratio is primary; beat-tracking is cross-check ────────
     if len(src_t) < MIN_VALID or len(nc_t) < MIN_VALID:
-        raise ValueError(
-            f"Insufficient valid tempo windows (source: {len(src_t)}, "
-            f"nightcore: {len(nc_t)}).  Need ≥ {MIN_VALID} each."
+        # Not enough beat windows — fall back to pure duration ratio.
+        tempo_ratio  = duration_ratio
+        tempo_ci     = (duration_ratio * 0.9995, duration_ratio * 1.0005)
+        tempo_method = "duration"
+    else:
+        beat_ratio, beat_ci = _bootstrap_ratio(nc_t, src_t)
+        tempo_ratio, tempo_ci, tempo_method = _reconcile_tempo(
+            beat_ratio, beat_ci, duration_ratio
         )
 
     pitch_ratio, pitch_ci = _bootstrap_ratio(nc_p, src_p)
-    tempo_ratio, tempo_ci = _bootstrap_ratio(nc_t, src_t)
 
     classification = _classify(tempo_ratio, pitch_ratio, tempo_ci, pitch_ci)
     rubberband     = _rubberband_params(tempo_ratio, pitch_ratio)
@@ -248,5 +317,7 @@ def build_result(
         n_nc_pitch_windows=len(nc_p),
         n_source_tempo_windows=len(src_t),
         n_nc_tempo_windows=len(nc_t),
+        duration_ratio=duration_ratio,
+        tempo_method=tempo_method,
         rubberband=rubberband,
     )

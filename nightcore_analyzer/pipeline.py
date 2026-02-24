@@ -66,6 +66,12 @@ def run(
     src_audio, _ = load_audio(source_path, sr=sr)
     _log(f"  {len(src_audio) / sr:.1f} s  ({len(src_audio):,} samples @ {sr} Hz)")
 
+    # Duration ratio is the exact tempo ground truth: speeding up the whole
+    # file by factor k makes it k× shorter, so src/nc == tempo_ratio.
+    duration_ratio = len(src_audio) / len(nc_audio)
+    _log(f"  Duration ratio (src ÷ nc): {duration_ratio:.6f}"
+         f"  ({len(src_audio)/sr:.1f} s ÷ {len(nc_audio)/sr:.1f} s)")
+
     # ── 2. window ─────────────────────────────────────────────────────────────
     _log(f"Slicing into {window_sec:.0f} s windows (hop {hop_sec:.0f} s)…")
     nc_windows  = slice_windows(nc_audio,  sr, window_sec, hop_sec)
@@ -103,7 +109,10 @@ def run(
 
     # ── 6. consensus + classification ─────────────────────────────────────────
     _log("Computing consensus…")
-    result = build_result(src_pitches, nc_pitches, src_tempos, nc_tempos)
+    result = build_result(
+        src_pitches, nc_pitches, src_tempos, nc_tempos,
+        duration_ratio=duration_ratio,
+    )
 
     _log("Done.")
     return result
