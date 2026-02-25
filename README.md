@@ -19,6 +19,9 @@ Nightcore tracks (2010–2014 era YouTube rips, low quality) are speed-shifted v
 7. [Project Structure](#project-structure)
 8. [Development Roadmap](#development-roadmap)
 9. [Usage](#usage)
+   - [Interactive Workflow (recommended)](#interactive-workflow-recommended)
+   - [GUI mode](#gui-mode)
+   - [CLI mode](#cli-mode)
 10. [Uninstall and Delete Cloned Files](#uninstall-and-delete-cloned-files)
 
 ---
@@ -54,6 +57,7 @@ Input files are dirty by design: leading/trailing silence, localised artifacts (
 | **CUDA Toolkit** | 11.8 or 12.x. `tensorflow[and-cuda]` bundles its own CUDA wheels so a system install is not strictly required for TF, but the driver must be present. |
 | **Python 3.10–3.12** | 3.11 recommended. |
 | **rubberband binary** | Required by pyrubberband at runtime. |
+| **sox** | Required by the interactive workflow to create the sped-up HQNC file. |
 
 ### Install the rubberband binary
 
@@ -76,6 +80,33 @@ Verify it is on PATH:
 ```bash
 rubberband --version
 ```
+
+### Install sox
+
+sox is used by the interactive workflow to speed up the HQ source file and
+create the HQNC (high-quality nightcore) file.
+
+```bash
+# Arch / Manjaro
+sudo pacman -S sox
+
+# Ubuntu / Debian
+sudo apt install sox
+
+# Fedora
+sudo dnf install sox
+
+# macOS (Homebrew)
+brew install sox
+```
+
+Verify it is on PATH:
+
+```bash
+sox --version
+```
+
+> **Note:** sox is only needed if you use the interactive workflow (`python -m nightcore_analyzer.workflow`) and choose to create an HQNC file.  The CLI and GUI analysis modes do not require it.
 
 ---
 
@@ -348,11 +379,13 @@ nightcore-to-flac-analyzer/
 │   ├── __init__.py             # package root; exposes run(), AnalysisResult, export, session
 │   ├── __main__.py             # python -m nightcore_analyzer → launches PyQt6 GUI
 │   ├── cli.py                  # python -m nightcore_analyzer.cli  (fully working)
+│   ├── workflow.py             # python -m nightcore_analyzer.workflow  (interactive guided mode)
 │   ├── pipeline.py             # top-level orchestrator
 │   ├── io.py                   # audio loading, resampling, windowing, energy gating
 │   ├── pitch.py                # CREPE per-window F0 estimation
 │   ├── tempo.py                # librosa per-window BPM estimation
 │   ├── consensus.py            # median/bootstrap ratio, CI, classification, RB params
+│   ├── spectral.py             # spectral comparison (brightness, EQ, compression, reverb)
 │   ├── session.py              # session persistence (last directory, parameters)
 │   ├── export.py               # JSON / CSV result export
 │   └── gui/
@@ -375,12 +408,91 @@ nightcore-to-flac-analyzer/
 | 4 | ✅ Complete | Results visualisation — per-window histograms |
 | 5 | ✅ Complete | Output panel — ratios, CIs, classification, Rubber Band params |
 | 6 | ✅ Complete | QoL — session persistence, JSON/CSV export |
+| 7 | ✅ Complete | Interactive workflow — speed comparison, HQNC creation via sox, spectral analysis |
 
 ---
 
 ## Usage
 
-### GUI mode (recommended)
+### Interactive Workflow (recommended)
+
+The interactive workflow guides you through the full process end-to-end:
+comparing speeds, creating a high-quality nightcore FLAC, verifying the
+result, and running a spectral analysis to surface any remaining differences.
+
+```bash
+python -m nightcore_analyzer.workflow [HQ_FILE] [NCOG_FILE]
+```
+
+Both file arguments are optional — the tool prompts for any missing paths.
+At startup you choose one of three modes:
+
+```
+  [f]  Full suite  (speed comparison → create HQNC → verification → spectral)
+  [s]  Speed comparison  (+ optional HQNC creation + optional spectral)
+  [a]  Spectral analysis  (standalone two-file comparison)
+  [e]  Exit
+```
+
+**Three file roles:**
+
+| Role | Description |
+|---|---|
+| **HQ** | Original high-quality source (FLAC/WAV) |
+| **NCOG** | The nightcore edit you want to match (typically a lossy MP3 rip) |
+| **HQNC** | HQ sped up to match NCOG — created by the workflow via `sox` |
+
+---
+
+#### Mode `[f]` — Full suite
+
+The recommended end-to-end flow:
+
+1. **Step 1/3** — Analyses HQ vs NCOG to determine the speed factor and pitch ratio.
+   Also prints the *inverse ratio* (speed needed if files are accidentally swapped)
+   so you can sanity-check without re-running.
+
+2. **Create HQNC?** — Prompts `[Y/n/e]`.  If yes, runs:
+   ```
+   sox 'Song.flac' 'Song [Nightcore].flac' speed 1.XXXXXX
+   ```
+   The output file is placed alongside HQ with `[Nightcore]` appended to the stem.
+
+3. **Step 2/3** — Analyses HQNC vs NCOG.  Interprets the result:
+   - Tempo and pitch both ≈ 1:1 → "Files are essentially identical ✓"
+   - Tempo matches but pitch differs → "Additional pitch shift detected in NCOG"
+   - Tempo still differs → flags the mismatch for investigation
+
+   Also prints a quality note: HQNC (lossless FLAC) vs NCOG (lossy MP3).
+
+4. **Step 3/3** — Optional spectral analysis on HQNC vs NCOG, reporting:
+   - Brightness / low-pass filtering
+   - High-frequency rolloff (treble cut — common in MP3 128k rips)
+   - Dynamic range / compression
+   - Frequency-band breakdown (sub-bass → brilliance)
+   - Reverb tail difference
+   - Duration mismatch (fade-in/out, different edits)
+   - Format quality note (lossless vs lossy) with a reverse-order warning
+
+---
+
+#### Mode `[s]` — Speed comparison
+
+Runs the HQ vs NCOG analysis, prints the speed factor and pitch ratio, then
+optionally creates HQNC and optionally runs spectral analysis.  Useful when
+you already have HQNC and want a quick check, or just want the sox command.
+
+---
+
+#### Mode `[a]` — Spectral analysis
+
+Prompts for any two audio files and runs the spectral comparison report
+standalone — no pipeline analysis involved.  Useful for comparing any two
+audio files directly.
+
+---
+
+### GUI mode
 
 ```bash
 python -m nightcore_analyzer
@@ -392,7 +504,14 @@ Results appear in the **Results** tab (ratios, CIs, classification, Rubber Band
 command) and the **Histograms** tab (per-window distributions).  Use
 **File → Save results as JSON/CSV** to export.
 
+> **Requirements:** PyQt6 must be installed (`pip install PyQt6`).  On headless
+> servers the GUI is not available; use the workflow CLI or CLI mode instead.
+
+---
+
 ### CLI mode
+
+For scripting or headless use:
 
 ```bash
 # Always quote paths — spaces and parentheses (common in music filenames) break
