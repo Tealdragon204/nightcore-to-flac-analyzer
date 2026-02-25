@@ -459,8 +459,16 @@ At startup you choose one of three modes:
 The recommended end-to-end flow:
 
 1. **Step 1/3** — Analyses HQ vs NCOG to determine the speed factor and pitch ratio.
-   Also prints the *inverse ratio* (speed needed if files are accidentally swapped)
-   so you can sanity-check without re-running.
+   Three estimators are reported:
+
+   | Estimator | Precision | Notes |
+   |-----------|-----------|-------|
+   | **BPM ratio** | ~0.1–0.3% | windowed median, always available |
+   | **IBI ratio** | ~0.01% | beat timestamps at hop=64; 10–30× more precise |
+
+   The **IBI ratio** is used as the speed factor for the `sox` command (BPM shown as
+   fallback).  Also prints the *inverse ratio* (speed needed if files are accidentally
+   swapped) so you can sanity-check without re-running.
 
 2. **Create HQNC?** — Prompts `[Y/n/e]`.  If yes, runs:
    ```
@@ -475,12 +483,20 @@ The recommended end-to-end flow:
    - Tempo still differs → **retry loop**: the tool offers to re-run `sox`
      with a corrected cumulative speed factor.
 
-   **Retry loop details:** if the measured tempo ratio is outside the ±2%
-   tolerance the tool shows the residual error and a corrected factor, then
+   Three estimators are shown for each verification attempt:
+
+   | Estimator | Tolerance | Notes |
+   |-----------|-----------|-------|
+   | **BPM ratio** | ±2% | windowed median |
+   | **IBI ratio** | ±0.5% | beat timestamps, tighter pass/fail |
+   | **Xcorr ratio** | — | waveform cross-correlation, quality score 0–1 |
+
+   **Retry loop details:** if the IBI ratio (or BPM ratio when IBI is unavailable)
+   is outside tolerance the tool shows the residual error and a corrected factor, then
    prompts:
    ```
    Speed is still off by +4.55%.
-   Corrected factor: 1.250000 × 1.045455 = 1.306819×
+   Corrected factor (IBI): 1.250000 × 1.045455 = 1.306819×
    Would create: Song [Nightcore] UPD1.flac
    Re-run sox with corrected factor? [Y/n/e]:
    ```

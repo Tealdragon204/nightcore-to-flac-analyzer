@@ -15,8 +15,8 @@ from .io import (
     WINDOW_SEC, HOP_SEC, ENERGY_GATE_DB,
 )
 from .pitch import batch_estimate_pitch
-from .tempo import batch_estimate_tempo
-from .consensus import build_result, AnalysisResult
+from .tempo import batch_estimate_tempo, estimate_ibis_global
+from .consensus import build_result, compute_ibi_ratio, AnalysisResult
 
 
 def run(
@@ -128,6 +128,23 @@ def run(
         src_pitches, nc_pitches, src_tempos, nc_tempos,
         nc_duration=nc_duration, src_duration=src_duration,
     )
+
+    # ── 7. IBI ratio pass (full-signal, high-resolution beat timestamps) ───────
+    # Runs beat tracking at hop_length=64 (≈1.45 ms) over the entire signal,
+    # giving ~0.01% precision on the speed ratio versus the ~0.1–0.3% from the
+    # windowed BPM median.  Attached to the existing AnalysisResult so all
+    # callers automatically receive it.
+    _log("Computing IBI ratio (high-precision beat timestamps, hop=64)…")
+    nc_ibis  = estimate_ibis_global(nc_audio,  sr)
+    src_ibis = estimate_ibis_global(src_audio, sr)
+    if (nc_ibis  is not None and len(nc_ibis)  >= 4 and
+            src_ibis is not None and len(src_ibis) >= 4):
+        ibi_r, ibi_c = compute_ibi_ratio(nc_ibis, src_ibis)
+        result.ibi_ratio = ibi_r
+        result.ibi_ci    = ibi_c
+        _log(f"  IBI ratio: {ibi_r:.6f}×  95% CI [{ibi_c[0]:.6f}, {ibi_c[1]:.6f}]")
+    else:
+        _log("  IBI ratio: insufficient beats — skipped")
 
     _log("Done.")
     return result
