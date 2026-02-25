@@ -123,6 +123,10 @@ class AnalysisResult:
     nc_duration:  Optional[float] = None
     src_duration: Optional[float] = None
 
+    # ── median BPMs from librosa (for debugging) ──────────────────────────────
+    nc_median_bpm:  Optional[float] = None
+    src_median_bpm: Optional[float] = None
+
     # ── sanity warnings (populated by build_result) ───────────────────────────
     warnings: List[str] = field(default_factory=list)
 
@@ -170,12 +174,31 @@ class AnalysisResult:
             lines.append(f"                  to hear original tempo → play nightcore at {inv:.4f}× speed")
             lines.append(f"                  (source was sped up by {tr:.4f}× to create the nightcore)")
 
+        # Median BPMs — useful for debugging librosa half-time / quantisation issues
+        if self.nc_median_bpm is not None and self.src_median_bpm is not None:
+            lines.append(
+                f"Median BPMs     : nightcore {self.nc_median_bpm:.2f}  |"
+                f"  source {self.src_median_bpm:.2f}"
+                f"  (raw detected; ratio = {self.nc_median_bpm / self.src_median_bpm:.6f})"
+            )
+
         lines.append("")
         lines.append(
             f"Rubber Band     : --time {rb.get('time_ratio', '?'):.6f}"
             f"  --pitch {rb.get('pitch_semitones', '?'):.4f} st"
+            "  (beat-detected ratio)"
         )
-        lines.append(f"CLI example     : {rb.get('cli_command', '')}")
+        lines.append(f"CLI (detected)  : {rb.get('cli_command', '')}")
+
+        # Duration-based alternative — shown when available; prefer when CI is degenerate
+        if rb.get("duration_time_ratio"):
+            lines.append(
+                f"Duration-based  : --time {rb['duration_time_ratio']:.6f}"
+                f"  --pitch {rb['duration_pitch_semitones']:.4f} st"
+                "  (uses file-length ratio — prefer this when CI is degenerate)"
+            )
+            lines.append(f"CLI (duration)  : {rb.get('duration_cli_command', '')}")
+
         return "\n".join(lines)
 
 
@@ -238,12 +261,21 @@ def _classify(
     return "ambiguous"
 
 
-def _rubberband_params(tempo_ratio: float, pitch_ratio: float) -> dict:
+def _rubberband_params(
+    tempo_ratio: float,
+    pitch_ratio: float,
+    nc_duration: Optional[float] = None,
+    src_duration: Optional[float] = None,
+) -> dict:
     """
     Rubber Band parameters to reconstruct the original FROM the nightcore.
 
     --time  : make the file longer by tempo_ratio (undo the speed-up)
     --pitch : lower the pitch to undo the net pitch shift
+
+    When durations are provided, also computes duration-based parameters
+    (using src/nc length ratio directly) as a more reliable fallback when
+    the beat-detected tempo ratio has a degenerate CI.
     """
     pitch_st = -12.0 * math.log2(pitch_ratio)
     nc_to_source_speed = round(1.0 / tempo_ratio, 6) if tempo_ratio != 0 else None
@@ -258,6 +290,19 @@ def _rubberband_params(tempo_ratio: float, pitch_ratio: float) -> dict:
             f" nightcore.flac reconstructed.flac"
         ),
     }
+
+    # Duration-based alternative: for a pure speed-up, duration_ratio = true tempo ratio.
+    # Pitch ratio also equals the tempo ratio for a pure speed-up (linked by physics).
+    if nc_duration and src_duration and nc_duration > 0:
+        dur_ratio = src_duration / nc_duration
+        dur_pitch_st = -12.0 * math.log2(dur_ratio)
+        rb["duration_time_ratio"]       = round(dur_ratio, 6)
+        rb["duration_pitch_semitones"]  = round(dur_pitch_st, 4)
+        rb["duration_cli_command"]      = (
+            f"rubberband --time {dur_ratio:.6f} --pitch {dur_pitch_st:.4f}"
+            f" nightcore.flac reconstructed.flac"
+        )
+
     return rb
 
 
@@ -345,12 +390,17 @@ def _check_sanity(
 
     # Degenerate tempo CI (lo == hi) → librosa BPM quantisation locked every window
     if abs(tempo_ci[1] - tempo_ci[0]) < 0.001:
+        dur_hint = (
+            f" Use the 'Duration-based' CLI command instead of 'CLI (detected)'."
+            if (nc_duration is not None and src_duration is not None) else
+            ""
+        )
         warnings.append(
             f"Tempo CI is degenerate [lo = hi = {tempo_ci[0]:.6f}]: every analysis "
             "window returned the same BPM from librosa. This is a quantisation "
             "artefact — the beat tracker snapped all windows to the same grid BPM. "
-            "The ratio direction should be correct but the exact value is less "
-            "reliable. Cross-check against the duration ratio shown above."
+            "The beat-detected ratio is unreliable; the duration ratio is more "
+            "trustworthy for this track." + dur_hint
         )
 
     # Wide pitch CI → CREPE could not reliably track F0
@@ -425,8 +475,11 @@ def build_result(
         tempo_ci = (1.0 / hi, 1.0 / lo)            # invert; bounds swap to stay ordered
         tempo_was_corrected = True
 
+    nc_median_bpm  = float(np.median(nc_t))  if len(nc_t)  > 0 else None
+    src_median_bpm = float(np.median(src_t)) if len(src_t) > 0 else None
+
     classification = _classify(tempo_ratio, pitch_ratio, tempo_ci, pitch_ci)
-    rubberband     = _rubberband_params(tempo_ratio, pitch_ratio)
+    rubberband     = _rubberband_params(tempo_ratio, pitch_ratio, nc_duration, src_duration)
     warnings       = _check_sanity(
         tempo_ratio, pitch_ratio, tempo_ci, pitch_ci,
         nc_duration, src_duration, tempo_was_corrected,
@@ -445,6 +498,8 @@ def build_result(
         rubberband=rubberband,
         nc_duration=nc_duration,
         src_duration=src_duration,
+        nc_median_bpm=nc_median_bpm,
+        src_median_bpm=src_median_bpm,
         warnings=warnings,
         src_pitches_raw=list(src_pitches),
         nc_pitches_raw=list(nc_pitches),
