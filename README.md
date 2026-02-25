@@ -425,6 +425,16 @@ python -m nightcore_analyzer.workflow [HQ_FILE] [NCOG_FILE]
 ```
 
 Both file arguments are optional — the tool prompts for any missing paths.
+You can type a path, paste one, or **drag-and-drop a file from your file
+manager directly into the terminal** — surrounding quotes are stripped
+automatically, so all three forms work:
+
+```
+Path to HQ source: /home/user/Song.flac
+Path to HQ source: '/home/user/Song.flac'
+Path to HQ source: "/home/user/Song.flac"
+```
+
 At startup you choose one of three modes:
 
 ```
@@ -458,10 +468,26 @@ The recommended end-to-end flow:
    ```
    The output file is placed alongside HQ with `[Nightcore]` appended to the stem.
 
-3. **Step 2/3** — Analyses HQNC vs NCOG.  Interprets the result:
+3. **Step 2/3 — Verification** (nightcore ↔ nightcore) — Analyses HQNC vs
+   NCOG and interprets the result:
    - Tempo and pitch both ≈ 1:1 → "Files are essentially identical ✓"
    - Tempo matches but pitch differs → "Additional pitch shift detected in NCOG"
-   - Tempo still differs → flags the mismatch for investigation
+   - Tempo still differs → **retry loop**: the tool offers to re-run `sox`
+     with a corrected cumulative speed factor.
+
+   **Retry loop details:** if the measured tempo ratio is outside the ±2%
+   tolerance the tool shows the residual error and a corrected factor, then
+   prompts:
+   ```
+   Speed is still off by +4.55%.
+   Corrected factor: 1.250000 × 1.045455 = 1.306819×
+   Would create: Song [Nightcore] UPD1.flac
+   Re-run sox with corrected factor? [Y/n/e]:
+   ```
+   Answering **Y** runs sox again, names the output `UPD1` (then `UPD2`,
+   `UPD3`, …), and re-verifies.  The loop continues until the result is
+   within tolerance or you skip to Step 3.  The latest `UPDn` file is
+   automatically used as the reference for spectral analysis.
 
    Also prints a quality note: HQNC (lossless FLAC) vs NCOG (lossy MP3).
 
