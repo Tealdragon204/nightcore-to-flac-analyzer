@@ -70,7 +70,7 @@ def _prompt_file(label: str, existing: Optional[str] = None) -> Path:
         print(f"  File not found: {existing}")
 
     while True:
-        raw = input(f"Path to {label}: ").strip()
+        raw = input(f"Path to {label}: ").strip().strip("'\"")
         if not raw:
             continue
         p = Path(raw)
