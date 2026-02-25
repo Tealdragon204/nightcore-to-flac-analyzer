@@ -24,10 +24,19 @@ AGREEMENT_TOLERANCE: float  = 0.08   # 8% — treat the two estimators as agreei
 HOP_LENGTH: int             = 512    # librosa hop size for onset detection
 
 
-def estimate_tempo(window: AudioWindow) -> Optional[float]:
+def estimate_tempo(window: AudioWindow, start_bpm: float = 120.0) -> Optional[float]:
     """
     Return a BPM estimate for *window*, or None if the window is too short /
     silent to yield a reliable beat count.
+
+    Parameters
+    ----------
+    start_bpm : float
+        Centre of the tempo prior passed to librosa's beat tracker and
+        tempogram estimator.  Defaults to 120 BPM (librosa default).
+        Pass a file-specific hint (e.g. ``median_src_bpm × duration_ratio``)
+        to steer the tracker away from wrong-harmonic snapping on high-BPM
+        nightcore tracks.
     """
     y, sr = window.audio, window.sample_rate
 
@@ -37,6 +46,7 @@ def estimate_tempo(window: AudioWindow) -> Optional[float]:
         onset_envelope=onset_env,
         sr=sr,
         hop_length=HOP_LENGTH,
+        start_bpm=start_bpm,
     )
     # librosa ≥ 0.10 may return a 1-element array; normalise to scalar
     tempo_default = float(np.atleast_1d(tempo_default)[0])
@@ -51,7 +61,8 @@ def estimate_tempo(window: AudioWindow) -> Optional[float]:
     tempo_tempogram = float(
         np.atleast_1d(
             librosa.feature.tempo(
-                onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH
+                onset_envelope=onset_env, sr=sr, hop_length=HOP_LENGTH,
+                start_bpm=start_bpm,
             )
         )[0]
     )
@@ -69,9 +80,18 @@ def estimate_tempo(window: AudioWindow) -> Optional[float]:
 def batch_estimate_tempo(
     windows: List[AudioWindow],
     log: Optional[Callable[[str], None]] = None,
+    start_bpm: float = 120.0,
 ) -> List[Optional[float]]:
     """
     Estimate tempo for every window in *windows*.
+
+    Parameters
+    ----------
+    start_bpm : float
+        Passed through to :func:`estimate_tempo` as the centre of the tempo
+        prior.  Use 120.0 (default) for source files; pass
+        ``median_src_bpm × duration_ratio`` for the nightcore file to steer
+        librosa away from wrong-harmonic snapping.
 
     Returns
     -------
@@ -82,7 +102,7 @@ def batch_estimate_tempo(
     for i, w in enumerate(windows):
         if log:
             log(f"    tempo window {i + 1}/{n}  [{w.start_sec:.1f}–{w.end_sec:.1f} s]")
-        results.append(estimate_tempo(w))
+        results.append(estimate_tempo(w, start_bpm=start_bpm))
 
     valid = sum(1 for r in results if r is not None)
     if log:

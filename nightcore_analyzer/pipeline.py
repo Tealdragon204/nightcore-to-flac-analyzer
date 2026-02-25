@@ -7,6 +7,7 @@ tempo estimation → consensus → classification → Rubber Band parameters.
 
 from __future__ import annotations
 
+import numpy as np
 from typing import Callable, Optional
 
 from .io import (
@@ -95,16 +96,34 @@ def run(
     src_pitches = batch_estimate_pitch(src_windows, log=_log)
 
     # ── 5. tempo estimation (librosa) ─────────────────────────────────────────
+    # Detect source tempos first (default prior), then use the source median
+    # BPM × duration ratio to steer librosa toward the correct harmonic for
+    # the nightcore.  Without this hint the beat tracker's prior (120 BPM)
+    # can snap to a sub-beat periodicity (e.g. ~86 BPM) instead of the true
+    # nightcore tempo (~128 BPM).
     _log("Estimating tempo (librosa)…")
-    _log("  ← nightcore →")
-    nc_tempos  = batch_estimate_tempo(nc_windows,  log=_log)
     _log("  ← source →")
     src_tempos = batch_estimate_tempo(src_windows, log=_log)
 
-    # ── 6. consensus + classification ─────────────────────────────────────────
-    _log("Computing consensus…")
     nc_duration  = len(nc_audio)  / sr
     src_duration = len(src_audio) / sr
+
+    nc_start_bpm = 120.0  # librosa default — used when no hint is computable
+    valid_src = [t for t in src_tempos if t is not None]
+    if valid_src and nc_duration > 0 and src_duration > 0:
+        median_src = float(np.median(valid_src))
+        nc_start_bpm = median_src * (src_duration / nc_duration)
+        _log(
+            f"  NC tempo prior: {nc_start_bpm:.1f} BPM  "
+            f"(src median {median_src:.1f} BPM × dur ratio "
+            f"{src_duration / nc_duration:.4f})"
+        )
+
+    _log("  ← nightcore →")
+    nc_tempos  = batch_estimate_tempo(nc_windows,  log=_log, start_bpm=nc_start_bpm)
+
+    # ── 6. consensus + classification ─────────────────────────────────────────
+    _log("Computing consensus…")
     result = build_result(
         src_pitches, nc_pitches, src_tempos, nc_tempos,
         nc_duration=nc_duration, src_duration=src_duration,
