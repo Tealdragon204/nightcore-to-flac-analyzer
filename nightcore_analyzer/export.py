@@ -21,6 +21,7 @@ def to_dict(result: AnalysisResult) -> dict:
     """Convert *result* to a JSON-serialisable dict (same format as the CLI)."""
     return {
         "classification": result.classification,
+        "warnings":       result.warnings,
         "tempo_ratio":    round(result.tempo_ratio, 8),
         "pitch_ratio":    round(result.pitch_ratio, 8),
         "tempo_ci_95":    [round(result.tempo_ci[0], 8), round(result.tempo_ci[1], 8)],
@@ -63,7 +64,9 @@ def export_csv(result: AnalysisResult, path: PathLike) -> None:
         "nightcore_tempo_windows": result.n_nc_tempo_windows,
         "rb_time_ratio":           rb.get("time_ratio", ""),
         "rb_pitch_semitones":      rb.get("pitch_semitones", ""),
+        "rb_nc_to_source_speed":   rb.get("nc_to_source_speed", ""),
         "rb_cli_command":          rb.get("cli_command", ""),
+        "warnings":                " | ".join(result.warnings),
     }
 
     with open(path, "w", newline="", encoding="utf-8") as fh:
