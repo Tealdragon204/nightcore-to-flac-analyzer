@@ -33,6 +33,14 @@ def to_dict(result: AnalysisResult) -> dict:
             "nightcore_tempo": result.n_nc_tempo_windows,
         },
         "rubberband": result.rubberband,
+        "durations": {
+            "nightcore_sec": round(result.nc_duration,  3) if result.nc_duration  else None,
+            "source_sec":    round(result.src_duration, 3) if result.src_duration else None,
+            "duration_ratio": (
+                round(result.src_duration / result.nc_duration, 8)
+                if result.nc_duration and result.src_duration else None
+            ),
+        },
     }
 
 
@@ -66,6 +74,12 @@ def export_csv(result: AnalysisResult, path: PathLike) -> None:
         "rb_pitch_semitones":      rb.get("pitch_semitones", ""),
         "rb_nc_to_source_speed":   rb.get("nc_to_source_speed", ""),
         "rb_cli_command":          rb.get("cli_command", ""),
+        "nc_duration_sec":         round(result.nc_duration,  3) if result.nc_duration  else "",
+        "src_duration_sec":        round(result.src_duration, 3) if result.src_duration else "",
+        "duration_ratio": (
+            round(result.src_duration / result.nc_duration, 8)
+            if result.nc_duration and result.src_duration else ""
+        ),
         "warnings":                " | ".join(result.warnings),
     }
 

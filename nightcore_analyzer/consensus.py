@@ -55,10 +55,11 @@ PURE_NC_TOLERANCE: float = 0.02  # ratio difference below this → same factor
 MIN_VALID: int           = 3     # minimum valid estimates to attempt consensus
 
 # ── sanity-check thresholds ───────────────────────────────────────────────────
-NIGHTCORE_RATIO_MIN: float  = 1.05   # tempo ratio below this → suspicious
-NIGHTCORE_RATIO_MAX: float  = 1.50   # tempo ratio above this → unusual
-NEAR_UNITY_TOLERANCE: float = 0.05   # |ratio − 1| < this → same-speed warning
-WIDE_CI_RELATIVE: float     = 2.0    # (hi − lo) / point > this → pitch CI unreliable
+NIGHTCORE_RATIO_MIN: float             = 1.05   # tempo ratio below this → suspicious
+NIGHTCORE_RATIO_MAX: float             = 1.50   # tempo ratio above this → unusual
+NEAR_UNITY_TOLERANCE: float            = 0.05   # |ratio − 1| < this → same-speed warning
+WIDE_CI_RELATIVE: float                = 2.0    # (hi − lo) / point > this → pitch CI unreliable
+DURATION_TEMPO_MISMATCH_TOLERANCE: float = 0.08 # |dur_ratio − tempo_ratio| / tempo_ratio > this → wrong version
 
 
 # ── result container ──────────────────────────────────────────────────────────
@@ -118,6 +119,10 @@ class AnalysisResult:
     src_tempos_raw:  Optional[List[Optional[float]]] = None
     nc_tempos_raw:   Optional[List[Optional[float]]] = None
 
+    # ── file durations (seconds) ──────────────────────────────────────────────
+    nc_duration:  Optional[float] = None
+    src_duration: Optional[float] = None
+
     # ── sanity warnings (populated by build_result) ───────────────────────────
     warnings: List[str] = field(default_factory=list)
 
@@ -134,10 +139,21 @@ class AnalysisResult:
             lines.append("")
 
         lines.append(f"Classification  : {self.classification}")
+
+        # Duration ratio — shown alongside tempo ratio for easy cross-check
+        dur_note = ""
+        if self.nc_duration and self.src_duration:
+            dur_ratio = self.src_duration / self.nc_duration
+            dur_note = (
+                f"  |  duration ratio {dur_ratio:.6f}×"
+                f" ({self.src_duration:.1f} s / {self.nc_duration:.1f} s)"
+            )
+
         lines.append(
             f"Tempo ratio     : {self.tempo_ratio:.6f}"
             f"  95% CI [{ci_t[0]:.6f}, {ci_t[1]:.6f}]"
             f"  (from {self.n_source_tempo_windows} src / {self.n_nc_tempo_windows} nc windows)"
+            + dur_note
         )
         lines.append(
             f"Pitch ratio     : {self.pitch_ratio:.6f}"
@@ -248,6 +264,7 @@ def _rubberband_params(tempo_ratio: float, pitch_ratio: float) -> dict:
 def _check_sanity(
     tempo_ratio: float,
     pitch_ratio: float,
+    tempo_ci: Tuple[float, float],
     pitch_ci: Tuple[float, float],
     nc_duration: Optional[float] = None,
     src_duration: Optional[float] = None,
@@ -262,7 +279,9 @@ def _check_sanity(
     2. Both files the same duration → probably same-version input mistake
     3. Tempo ratio outside the normal nightcore range (1.05 – 1.50)
        when no duration correction was possible
-    4. Pitch CI too wide → CREPE could not track pitch reliably
+    4. Duration ratio vs tempo ratio mismatch → files are different versions
+    5. Degenerate tempo CI (lo == hi) → librosa BPM quantisation artefact
+    6. Pitch CI too wide → CREPE could not track pitch reliably
     """
     warnings: List[str] = []
 
@@ -308,6 +327,31 @@ def _check_sanity(
                 f"Tempo ratio is {tempo_ratio:.4f}, above the typical nightcore range "
                 f"({NIGHTCORE_RATIO_MIN}–{NIGHTCORE_RATIO_MAX}×). Verify the input files."
             )
+
+    # Duration ratio vs tempo ratio mismatch → different song versions
+    if nc_duration is not None and src_duration is not None:
+        dur_speed_ratio = src_duration / nc_duration   # equivalent to tempo_ratio for pure speed-up
+        discrepancy = abs(dur_speed_ratio - tempo_ratio) / tempo_ratio
+        if discrepancy > DURATION_TEMPO_MISMATCH_TOLERANCE:
+            warnings.append(
+                f"Duration ratio ({dur_speed_ratio:.4f}×) and detected tempo ratio "
+                f"({tempo_ratio:.4f}×) differ by {discrepancy * 100:.1f}%. For a pure "
+                "speed-up these should be nearly equal. Most likely cause: the two files "
+                "are different edits or versions of the same song (e.g. radio edit vs. "
+                "extended mix). Find the exact version used to create the nightcore, or "
+                f"use the duration ratio ({dur_speed_ratio:.4f}×) directly as the "
+                "rubberband --time factor."
+            )
+
+    # Degenerate tempo CI (lo == hi) → librosa BPM quantisation locked every window
+    if abs(tempo_ci[1] - tempo_ci[0]) < 0.001:
+        warnings.append(
+            f"Tempo CI is degenerate [lo = hi = {tempo_ci[0]:.6f}]: every analysis "
+            "window returned the same BPM from librosa. This is a quantisation "
+            "artefact — the beat tracker snapped all windows to the same grid BPM. "
+            "The ratio direction should be correct but the exact value is less "
+            "reliable. Cross-check against the duration ratio shown above."
+        )
 
     # Wide pitch CI → CREPE could not reliably track F0
     if pitch_ratio > 0:
@@ -384,7 +428,7 @@ def build_result(
     classification = _classify(tempo_ratio, pitch_ratio, tempo_ci, pitch_ci)
     rubberband     = _rubberband_params(tempo_ratio, pitch_ratio)
     warnings       = _check_sanity(
-        tempo_ratio, pitch_ratio, pitch_ci,
+        tempo_ratio, pitch_ratio, tempo_ci, pitch_ci,
         nc_duration, src_duration, tempo_was_corrected,
     )
 
@@ -399,6 +443,8 @@ def build_result(
         n_source_tempo_windows=len(src_t),
         n_nc_tempo_windows=len(nc_t),
         rubberband=rubberband,
+        nc_duration=nc_duration,
+        src_duration=src_duration,
         warnings=warnings,
         src_pitches_raw=list(src_pitches),
         nc_pitches_raw=list(nc_pitches),
