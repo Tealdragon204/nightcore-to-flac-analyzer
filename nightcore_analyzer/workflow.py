@@ -3,18 +3,19 @@ Interactive three-mode workflow for the Nightcore Analyzer.
 
 Usage
 -----
-    python -m nightcore_analyzer.workflow [HQ_FILE] [NCOG_FILE]
+    python -m nightcore_analyzer.workflow [NCOG_FILE] [HQ_FILE]
 
-The two positional arguments are optional; the tool prompts for any missing
-paths interactively.
+Both positional arguments are optional; the tool prompts for any missing
+paths interactively.  NCOG (the nightcore edit) is always requested first,
+then HQ (the original high-quality source).
 
 Modes
 -----
 [f]  Full suite
-     HQ vs NCOG  →  create HQNC via sox  →  HQNC vs NCOG  →  spectral analysis
+     NCOG vs HQ  →  create HQNC via sox  →  HQNC vs NCOG  →  spectral analysis
 
 [s]  Speed comparison
-     HQ vs NCOG  →  optional create HQNC  →  optional spectral analysis
+     NCOG vs HQ  →  optional create HQNC  →  optional spectral analysis
 
 [a]  Spectral analysis (standalone)
      Compare any two audio files spectrally.
@@ -34,20 +35,30 @@ from . import spectral as spec
 
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
-def _prompt_choice(question: str, options: str = "yne") -> str:
+def _prompt_choice(question: str, options: str = "yne", default: str = "") -> str:
     """
     Ask *question* and loop until the user enters one char from *options*.
     'e' always exits immediately.  Returns the character lower-cased.
+
+    *default* (if given) is accepted on a bare Enter and shown uppercase in
+    the prompt; all other options are shown lowercase — e.g. "Y/n/e" means
+    Y is the default.
     """
-    opts_display = "/".join(options.upper())
+    parts = []
+    for c in options.lower():
+        parts.append(c.upper() if c == default.lower() else c.lower())
+    opts_display = "/".join(parts)
+
     while True:
         raw = input(f"{question} [{opts_display}]: ").strip().lower()
         if raw == "e":
             print("Exiting.")
             sys.exit(0)
+        if not raw and default and default.lower() in options.lower():
+            return default.lower()
         if raw in options.lower():
             return raw
-        print(f"  Please type one of: {', '.join(options.upper())}")
+        print(f"  Please type one of: {', '.join(c.upper() for c in options)}")
 
 
 def _prompt_file(label: str, existing: Optional[str] = None) -> Path:
@@ -124,9 +135,11 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
     print(f"  Pitch ratio   : {pr:.6f}")
     print(f"  Classification: {result.classification}")
 
-    # Tempo CI
+    # CIs
     lo, hi = result.tempo_ci
     print(f"  Tempo 95% CI  : [{lo:.4f}, {hi:.4f}]")
+    lo_p, hi_p = result.pitch_ci
+    print(f"  Pitch 95% CI  : [{lo_p:.4f}, {hi_p:.4f}]")
 
     # BPMs
     if result.nc_median_bpm and result.src_median_bpm:
@@ -155,17 +168,29 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
             # wrap long warnings at 80 chars
             print(f"  Warning: {w[:200]}")
 
-    # Recommended sox command
+    # ── Sanity check: inverse direction (if files are swapped) ────────────────
+    # Show this BEFORE the sox command so the reader evaluates it first.
+    print()
+    if tr > 0:
+        inv = 1.0 / tr
+        if abs(tr - 1.0) < _NEAR_UNITY:
+            print("  If files are swapped: speed would also be ~1.000× (no difference).")
+        elif inv < 1.0:
+            print(
+                f"  If files are swapped: speed = 1 / {tr:.4f} = {inv:.6f}×  "
+                f"(would SLOW DOWN HQ — files appear to be in the correct order)"
+            )
+        else:
+            print(
+                f"  If files are swapped: speed = 1 / {tr:.4f} = {inv:.6f}×  "
+                f"(would speed up HQ — double-check which file is the nightcore)"
+            )
+
+    # ── Recommended sox command ────────────────────────────────────────────────
     hqnc_path = _make_hqnc_path(hq)
     print()
     print("  Recommended sox command:")
     print(f"    sox '{hq}' '{hqnc_path}' speed {tr:.6f}")
-
-    # Inverse view
-    if tr > 0:
-        inv = 1.0 / tr
-        inv_note = "(< 1 — this direction would slow HQ down)" if inv < 1 else ""
-        print(f"\n  Inverse (if files are swapped): speed = 1/{tr:.4f} = {inv:.6f}× {inv_note}")
 
 
 def _print_verification_result(
@@ -206,33 +231,22 @@ def _print_verification_result(
 
     # Format / quality
     print()
-    _print_format_quality(hqnc, ncog, label_hqnc="HQNC", label_ncog="NCOG")
+    _print_format_quality(hqnc, ncog)
 
 
-def _print_format_quality(
-    hqnc: Path,
-    ncog: Path,
-    label_hqnc: str = "HQNC",
-    label_ncog: str = "NCOG",
-) -> None:
-    lossless = {"flac", "wav", "aiff", "aif", "pcm"}
-    ext_hqnc = hqnc.suffix.lstrip(".").lower()
-    ext_ncog = ncog.suffix.lstrip(".").lower()
-
-    if ext_hqnc in lossless and ext_ncog not in lossless:
-        print(
-            f"  Quality: {label_hqnc} is lossless ({ext_hqnc.upper()}) — higher quality "
-            f"than {label_ncog} ({ext_ncog.upper()}).  {label_ncog} has lossy compression artefacts."
-        )
-    elif ext_ncog in lossless and ext_hqnc not in lossless:
-        print(
-            f"  Warning: {label_ncog} is lossless ({ext_ncog.upper()}) but {label_hqnc} is "
-            f"lossy ({ext_hqnc.upper()}).  Check that files are in the correct order."
-        )
-    elif ext_hqnc not in lossless and ext_ncog not in lossless:
-        print(f"  Both files appear lossy ({ext_hqnc.upper()} / {ext_ncog.upper()}).")
-    else:
-        print(f"  Both files are lossless ({ext_hqnc.upper()} / {ext_ncog.upper()}).")
+def _print_format_quality(hqnc: Path, ncog: Path) -> None:
+    """
+    Print a brief container-format note.  Full quality analysis (including
+    lossy-transcode detection via effective bandwidth) is done by the spectral
+    analysis step; this is just a quick header note.
+    """
+    lossless  = {"flac", "wav", "aiff", "aif", "pcm"}
+    ext_hqnc  = hqnc.suffix.lstrip(".").lower()
+    ext_ncog  = ncog.suffix.lstrip(".").lower()
+    note_hqnc = "lossless container" if ext_hqnc in lossless else "lossy"
+    note_ncog = "lossless container" if ext_ncog in lossless else "lossy"
+    print(f"  Format: HQNC = {ext_hqnc.upper()} ({note_hqnc})  |  NCOG = {ext_ncog.upper()} ({note_ncog})")
+    print("  Run spectral analysis for a full quality assessment (including transcode detection).")
 
 
 # ── spectral analysis ─────────────────────────────────────────────────────────
@@ -281,12 +295,30 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
 
     tr = result1.tempo_ratio
 
-    # Ask to create HQNC
+    # Ask to create HQNC — prompt wording and default depend on the speed factor
     print()
-    ans = _prompt_choice(
-        "  Create HQNC (speed up HQ by the detected factor)?",
-        options="yne",
-    )
+    if abs(tr - 1.0) < _NEAR_UNITY:
+        hqnc_name = _make_hqnc_path(hq).name
+        print(
+            f"  ! Speed factor is ~1.000× — no meaningful speed change would be applied.\n"
+            f"    Output would be: {hqnc_name}\n"
+            f"    If HQ is already a nightcore, this produces a pointless copy.\n"
+            f"    Check that the correct files were provided (NCOG first, then HQ)."
+        )
+        ans = _prompt_choice("  Create HQNC anyway?", options="yne", default="n")
+    elif tr < 1.0:
+        print(
+            f"  !! Speed factor is {tr:.6f}× — LESS THAN 1.\n"
+            f"     This would create a SLOWER version of HQ, not a faster one.\n"
+            f"     Check that files are in the correct order (NCOG first, then HQ)."
+        )
+        ans = _prompt_choice("  Create this slower file anyway?", options="yne", default="n")
+    else:
+        ans = _prompt_choice(
+            "  Create HQNC (speed up HQ by the detected factor)?",
+            options="yne",
+            default="y",
+        )
 
     hqnc: Optional[Path] = None
     if ans == "y":
@@ -339,14 +371,29 @@ def run_speed_comparison(hq: Path, ncog: Path) -> None:
     hqnc: Optional[Path] = None
 
     if tempo_same and pitch_same:
-        print("\n  Files appear to be at the same speed and pitch.")
+        print("\n  Files appear to be at the same speed and pitch — possibly the same file.")
     else:
         if not tempo_same:
             print()
-            ans = _prompt_choice(
-                "  Create HQNC (speed up HQ by the detected factor)?",
-                options="yne",
-            )
+            if abs(tr - 1.0) < _NEAR_UNITY:
+                hqnc_name = _make_hqnc_path(hq).name
+                print(
+                    f"  ! Speed factor is ~1.000× — output would be: {hqnc_name}\n"
+                    f"    Check that the correct files were provided (NCOG first, then HQ)."
+                )
+                ans = _prompt_choice("  Create HQNC anyway?", options="yne", default="n")
+            elif tr < 1.0:
+                print(
+                    f"  !! Speed factor is {tr:.6f}× — LESS THAN 1.\n"
+                    f"     This would create a SLOWER file. Check file order (NCOG first, then HQ)."
+                )
+                ans = _prompt_choice("  Create this slower file anyway?", options="yne", default="n")
+            else:
+                ans = _prompt_choice(
+                    "  Create HQNC (speed up HQ by the detected factor)?",
+                    options="yne",
+                    default="y",
+                )
             if ans == "y":
                 hqnc = _make_hqnc_path(hq)
                 _run_sox(hq, hqnc, tr)
@@ -373,8 +420,8 @@ def run_speed_comparison(hq: Path, ncog: Path) -> None:
 
 def main() -> None:
     args = sys.argv[1:]
-    hq_arg   = args[0] if len(args) > 0 else None
-    ncog_arg = args[1] if len(args) > 1 else None
+    ncog_arg = args[0] if len(args) > 0 else None
+    hq_arg   = args[1] if len(args) > 1 else None
 
     print()
     _hr("═")
@@ -392,10 +439,10 @@ def main() -> None:
         run_spectral_analysis()
         return
 
-    # Modes f and s need HQ + NCOG
+    # Modes f and s need both files — NCOG first, then HQ
     print()
-    hq   = _prompt_file("HQ source file (original, high-quality)", hq_arg)
-    ncog = _prompt_file("NCOG file (original nightcore edit)",      ncog_arg)
+    ncog = _prompt_file("NCOG (nightcore edit)", ncog_arg)
+    hq   = _prompt_file("HQ source (original high-quality)", hq_arg)
 
     if mode == "f":
         run_full_suite(hq, ncog)

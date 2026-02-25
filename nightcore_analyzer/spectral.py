@@ -30,6 +30,7 @@ class SpectralStats:
     brilliance: float   # 6000–20000 Hz
     decay_rate: float   # mean diff of loud RMS frames (reverb proxy)
     duration: float     # seconds
+    effective_bandwidth_hz: float  # highest freq with significant energy (lossy-transcode indicator)
 
 
 # ── analysis ──────────────────────────────────────────────────────────────────
@@ -78,12 +79,27 @@ def analyze(path: str, label: Optional[str] = None) -> SpectralStats:
 
     duration = librosa.get_duration(y=y, sr=sr)
 
+    # Effective bandwidth — highest frequency bin with significant energy.
+    # MP3 128k hard-cuts at ~16 kHz, 192k at ~18 kHz, 320k at ~20 kHz.
+    # A "lossless" container (FLAC/WAV) with a sharp cutoff below ~18 kHz
+    # was almost certainly transcoded from a lossy source — the container
+    # format alone does not guarantee actual lossless content.
+    stft_db     = librosa.amplitude_to_db(stft, ref=np.max)
+    freq_avg_db = np.mean(stft_db, axis=1)          # per-bin average dB
+    # 60 dB below the loudest bin ≈ effectively silent
+    significant = freq_avg_db > (np.max(freq_avg_db) - 60.0)
+    if significant.any():
+        effective_bw = float(freqs[np.where(significant)[0][-1]])
+    else:
+        effective_bw = float(freqs[-1])
+
     return SpectralStats(
         centroid=centroid, rolloff=rolloff,
         rms_mean=rms_mean, rms_variance=rms_var,
         sub_bass=sub_bass, bass=bass, midrange=midrange,
         presence=presence, brilliance=brilliance,
         decay_rate=decay_rate, duration=duration,
+        effective_bandwidth_hz=effective_bw,
     )
 
 
@@ -225,8 +241,12 @@ def compare_and_print(
         print("No significant spectral differences detected.")
 
     # ── format / quality note ──────────────────────────────────────────────────
-    _format_quality_note(ref_path, other_path, ref.brilliance, other.brilliance,
-                         label_ref, label_other)
+    _format_quality_note(
+        ref_path, other_path, ref.brilliance, other.brilliance,
+        label_ref, label_other,
+        ref_bandwidth=ref.effective_bandwidth_hz,
+        other_bandwidth=other.effective_bandwidth_hz,
+    )
 
 
 def _format_quality_note(
@@ -236,8 +256,17 @@ def _format_quality_note(
     other_brilliance: float,
     label_ref: str,
     label_other: str,
+    ref_bandwidth: Optional[float] = None,
+    other_bandwidth: Optional[float] = None,
 ) -> None:
-    """Print a short quality/format note if paths are available."""
+    """
+    Print a quality/format note.
+
+    Uses the measured effective bandwidth (highest frequency with significant
+    energy) rather than the file extension to assess actual audio quality.
+    A FLAC that cuts off at ~16 kHz was almost certainly converted from MP3
+    128k — its container is lossless but its content is not.
+    """
     if not ref_path or not other_path:
         return
 
@@ -248,30 +277,83 @@ def _format_quality_note(
     fmt_other = _fmt(other_path)
     lossless  = {"flac", "wav", "aiff", "aif", "pcm"}
 
-    ref_lossless   = fmt_ref   in lossless
-    other_lossless = fmt_other in lossless
+    ref_container_lossless   = fmt_ref   in lossless
+    other_container_lossless = fmt_other in lossless
+
+    # ── Lossy-transcode detection thresholds ──────────────────────────────────
+    # MP3 128k → cutoff ~16 kHz; 192k → ~18 kHz; 320k → ~20 kHz.
+    # We flag anything below 18.5 kHz in a "lossless" container as suspect.
+    _TRANSCODE_THRESHOLD_HZ = 18_500
+
+    def _transcode_grade(bw: Optional[float]) -> Optional[str]:
+        """Return a human-readable guess of lossy source bitrate, or None."""
+        if bw is None:
+            return None
+        if bw < 16_500:
+            return "MP3 ~128 kbps"
+        if bw < 18_500:
+            return "MP3 ~192 kbps"
+        if bw < 20_000:
+            return "MP3 ~320 kbps"
+        return None   # looks genuinely lossless
+
+    ref_transcode   = _transcode_grade(ref_bandwidth)   if ref_container_lossless   else None
+    other_transcode = _transcode_grade(other_bandwidth) if other_container_lossless else None
+
+    # "True lossless" = lossless container AND no transcode signature
+    ref_truly_lossless   = ref_container_lossless   and ref_transcode   is None
+    other_truly_lossless = other_container_lossless and other_transcode is None
 
     print()
     print("FORMAT / QUALITY NOTE")
-    if ref_lossless and not other_lossless:
-        print(
-            f"  {label_ref} is lossless ({fmt_ref.upper()}) and {label_other} is lossy "
-            f"({fmt_other.upper()}).  {label_ref} is the higher-quality source."
-        )
-    elif other_lossless and not ref_lossless:
-        print(
-            f"  {label_other} is lossless ({fmt_other.upper()}) but {label_ref} is lossy "
-            f"({fmt_ref.upper()}).  Check that files are in the correct order."
-        )
-    elif not ref_lossless and not other_lossless:
-        print(f"  Both files appear lossy ({fmt_ref.upper()} / {fmt_other.upper()}).")
-    else:
-        print(f"  Both files are lossless ({fmt_ref.upper()} / {fmt_other.upper()}).")
 
-    # Warn if the "lossless" file has less brilliance (likely the files are swapped)
-    brill_diff = _pct(ref_brilliance, other_brilliance)
-    if ref_lossless and not other_lossless and brill_diff > 20:
+    # Container formats
+    fmt_line = (
+        f"  Container: {label_ref} → {fmt_ref.upper()}   |   "
+        f"{label_other} → {fmt_other.upper()}"
+    )
+    print(fmt_line)
+
+    # Bandwidth measurements
+    if ref_bandwidth and other_bandwidth:
         print(
-            f"  Warning: {label_other} (lossy) has more high-frequency content than "
-            f"{label_ref} (lossless).  The files may be in the wrong order."
+            f"  Effective bandwidth: {label_ref} → {ref_bandwidth/1000:.1f} kHz   |   "
+            f"{label_other} → {other_bandwidth/1000:.1f} kHz"
+        )
+
+    # Transcode warnings (appear even if the extension says FLAC)
+    for label, container_lossless, transcode, bw in [
+        (label_ref,   ref_container_lossless,   ref_transcode,   ref_bandwidth),
+        (label_other, other_container_lossless, other_transcode, other_bandwidth),
+    ]:
+        if container_lossless and transcode and bw:
+            print(
+                f"  ! {label} ({fmt_ref.upper() if label == label_ref else fmt_other.upper()})"
+                f" — spectral content cuts off at ~{bw/1000:.1f} kHz, consistent with "
+                f"{transcode} encoding. This file appears to be a lossy-to-lossless "
+                f"transcode; the lossless container does NOT guarantee lossless audio."
+            )
+
+    # Verdict
+    if ref_truly_lossless and not other_truly_lossless:
+        print(
+            f"  Verdict: {label_ref} is genuinely lossless — "
+            f"{label_other} is lower quality."
+        )
+    elif other_truly_lossless and not ref_truly_lossless:
+        print(
+            f"  Verdict: {label_other} is genuinely lossless but {label_ref} is not — "
+            f"check that files are in the correct order."
+        )
+    elif not ref_truly_lossless and not other_truly_lossless:
+        print("  Verdict: Neither file appears to be a genuine lossless master.")
+    else:
+        print("  Verdict: Both files appear to be genuinely lossless.")
+
+    # Swap-order check: if the "lossless" file has notably less HF content
+    brill_diff = _pct(ref_brilliance, other_brilliance)
+    if ref_truly_lossless and not other_truly_lossless and brill_diff > 20:
+        print(
+            f"  Warning: {label_other} (lower quality by format) has more high-frequency "
+            f"content than {label_ref}. The files may be in the wrong order."
         )
