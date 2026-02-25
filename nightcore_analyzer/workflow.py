@@ -90,6 +90,19 @@ def _make_hqnc_path(hq: Path) -> Path:
     return hq.with_name(hq.stem + " [Nightcore]" + hq.suffix)
 
 
+def _make_hqnc_path_v(hq: Path, version: int) -> Path:
+    """
+    Return a versioned HQNC path.
+
+    version 0  →  ``Song [Nightcore].flac``
+    version 1  →  ``Song [Nightcore] UPD1.flac``
+    version 2  →  ``Song [Nightcore] UPD2.flac``
+    """
+    if version == 0:
+        return hq.with_name(hq.stem + " [Nightcore]" + hq.suffix)
+    return hq.with_name(hq.stem + f" [Nightcore] UPD{version}" + hq.suffix)
+
+
 def _run_sox(src: Path, dst: Path, speed: float) -> None:
     if not shutil.which("sox"):
         print(
@@ -197,15 +210,22 @@ def _print_verification_result(
     result: "pipeline.AnalysisResult",
     hqnc: Path,
     ncog: Path,
-) -> None:
-    """Interpret the HQNC-vs-NCOG comparison."""
+) -> bool:
+    """
+    Interpret the HQNC-vs-NCOG comparison.
+
+    Returns True if tempo (and pitch) are within tolerance so the
+    caller knows whether a re-run is worth offering.
+    """
     tr = result.tempo_ratio
     pr = result.pitch_ratio
 
     print()
     _hr("═")
-    print("  VERIFICATION RESULTS  (HQNC vs NCOG)")
+    print("  VERIFICATION  (HQNC vs NCOG — nightcore \u2194 nightcore)")
     _hr("═")
+    print(f"  Comparing : {hqnc.name}")
+    print(f"       vs   : {ncog.name}")
     print(f"  Tempo ratio : {tr:.6f}×")
     print(f"  Pitch ratio : {pr:.6f}")
 
@@ -225,13 +245,13 @@ def _print_verification_result(
     else:
         pct_off = (tr - 1.0) * 100
         print()
-        print(f"  Speed still differs by {pct_off:+.2f}% — sox may have used the wrong factor,")
-        print("  or the source BPM estimate was inaccurate.  Re-run with --energy-gate")
-        print("  adjustments or check that the correct files were provided.")
+        print(f"  Speed still differs by {pct_off:+.2f}%.")
 
     # Format / quality
     print()
     _print_format_quality(hqnc, ncog)
+
+    return tempo_ok
 
 
 def _print_format_quality(hqnc: Path, ncog: Path) -> None:
@@ -321,15 +341,56 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
         )
 
     hqnc: Optional[Path] = None
+    current_speed = tr
+    upd_version = 0
     if ans == "y":
-        hqnc = _make_hqnc_path(hq)
-        _run_sox(hq, hqnc, tr)
+        hqnc = _make_hqnc_path_v(hq, upd_version)
+        _run_sox(hq, hqnc, current_speed)
 
-    # Step 2 — verification
+    # Step 2 — verification loop (retry with corrected factor until OK or user bails)
     if hqnc and hqnc.is_file():
-        print(f"\n  Step 2/3 — Verification  (HQNC vs NCOG)")
-        result2 = _run_pipeline(nightcore=ncog, source=hqnc, step_label="Analysing HQNC vs NCOG…")
-        _print_verification_result(result2, hqnc, ncog)
+        attempt = 0
+        while True:
+            attempt += 1
+            step_label = (
+                "Step 2/3 — Verification  (HQNC vs NCOG)"
+                if attempt == 1
+                else f"Step 2/3 — Re-verification  (attempt {attempt})"
+            )
+            print(f"\n  {step_label}")
+            result2 = _run_pipeline(
+                nightcore=ncog, source=hqnc,
+                step_label="Analysing HQNC vs NCOG…",
+            )
+            tempo_ok = _print_verification_result(result2, hqnc, ncog)
+
+            if tempo_ok:
+                break  # good enough — proceed to spectral
+
+            # ── Offer corrected re-run ────────────────────────────────────────
+            corrected_speed = current_speed * result2.tempo_ratio
+            upd_version += 1
+            next_hqnc = _make_hqnc_path_v(hq, upd_version)
+            pct_off = (result2.tempo_ratio - 1.0) * 100
+
+            print()
+            print(f"  Speed is still off by {pct_off:+.2f}%.")
+            print(
+                f"  Corrected factor: {current_speed:.6f} × {result2.tempo_ratio:.6f}"
+                f" = {corrected_speed:.6f}×"
+            )
+            print(f"  Would create: {next_hqnc.name}")
+            ans_retry = _prompt_choice(
+                "  Re-run sox with corrected factor?",
+                options="yne",
+                default="y",
+            )
+            if ans_retry != "y":
+                break
+
+            _run_sox(hq, next_hqnc, corrected_speed)
+            hqnc = next_hqnc
+            current_speed = corrected_speed
     else:
         print("\n  Step 2/3 — Skipped (no HQNC created).")
 
