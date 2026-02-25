@@ -1,0 +1,407 @@
+"""
+Interactive three-mode workflow for the Nightcore Analyzer.
+
+Usage
+-----
+    python -m nightcore_analyzer.workflow [HQ_FILE] [NCOG_FILE]
+
+The two positional arguments are optional; the tool prompts for any missing
+paths interactively.
+
+Modes
+-----
+[f]  Full suite
+     HQ vs NCOG  →  create HQNC via sox  →  HQNC vs NCOG  →  spectral analysis
+
+[s]  Speed comparison
+     HQ vs NCOG  →  optional create HQNC  →  optional spectral analysis
+
+[a]  Spectral analysis (standalone)
+     Compare any two audio files spectrally.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+from . import pipeline
+from . import spectral as spec
+
+
+# ── I/O helpers ───────────────────────────────────────────────────────────────
+
+def _prompt_choice(question: str, options: str = "yne") -> str:
+    """
+    Ask *question* and loop until the user enters one char from *options*.
+    'e' always exits immediately.  Returns the character lower-cased.
+    """
+    opts_display = "/".join(options.upper())
+    while True:
+        raw = input(f"{question} [{opts_display}]: ").strip().lower()
+        if raw == "e":
+            print("Exiting.")
+            sys.exit(0)
+        if raw in options.lower():
+            return raw
+        print(f"  Please type one of: {', '.join(options.upper())}")
+
+
+def _prompt_file(label: str, existing: Optional[str] = None) -> Path:
+    """Return a validated Path for *label*, re-using *existing* if supplied."""
+    if existing:
+        p = Path(existing)
+        if p.is_file():
+            return p
+        print(f"  File not found: {existing}")
+
+    while True:
+        raw = input(f"Path to {label}: ").strip()
+        if not raw:
+            continue
+        p = Path(raw)
+        if p.is_file():
+            return p
+        print(f"  File not found: {p}")
+
+
+def _hr(char: str = "─", width: int = 57) -> None:
+    print(char * width)
+
+
+# ── sox helper ────────────────────────────────────────────────────────────────
+
+def _make_hqnc_path(hq: Path) -> Path:
+    """Return e.g. /path/Song [Nightcore].flac from /path/Song.flac"""
+    return hq.with_name(hq.stem + " [Nightcore]" + hq.suffix)
+
+
+def _run_sox(src: Path, dst: Path, speed: float) -> None:
+    if not shutil.which("sox"):
+        print(
+            "\n  ERROR: sox not found on PATH.\n"
+            "  Install it:  sudo apt install sox   (Debian/Ubuntu)\n"
+            "               brew install sox        (macOS)\n"
+        )
+        raise SystemExit(1)
+    print(f"\n  Running: sox '{src}' '{dst}' speed {speed:.6f}")
+    subprocess.run(["sox", str(src), str(dst), "speed", f"{speed:.6f}"], check=True)
+    print(f"  Created: {dst}")
+
+
+# ── pipeline wrapper / result display ─────────────────────────────────────────
+
+_NEAR_UNITY = 0.02   # |ratio − 1| below this → "essentially the same"
+_PITCH_TEMPO_TOLERANCE = 0.02  # extra pitch shift threshold beyond tempo ratio
+
+
+def _run_pipeline(nightcore: Path, source: Path, step_label: str) -> "pipeline.AnalysisResult":
+    print()
+    _hr("─")
+    print(f"  {step_label}")
+    _hr("─")
+    print(f"  Nightcore : {nightcore.name}")
+    print(f"  Source    : {source.name}")
+    print()
+
+    result = pipeline.run(str(nightcore), str(source), log=lambda m: print(f"  {m}"))
+    return result
+
+
+def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path) -> None:
+    """Print the speed/pitch summary and the recommended sox command."""
+    tr = result.tempo_ratio
+    pr = result.pitch_ratio
+
+    print()
+    _hr("═")
+    print("  SPEED COMPARISON RESULTS")
+    _hr("═")
+    print(f"  Speed factor  : {tr:.6f}×")
+    print(f"  Pitch ratio   : {pr:.6f}")
+    print(f"  Classification: {result.classification}")
+
+    # Tempo CI
+    lo, hi = result.tempo_ci
+    print(f"  Tempo 95% CI  : [{lo:.4f}, {hi:.4f}]")
+
+    # BPMs
+    if result.nc_median_bpm and result.src_median_bpm:
+        print(
+            f"  Median BPMs   : NCOG {result.nc_median_bpm:.1f} BPM  |"
+            f"  HQ {result.src_median_bpm:.1f} BPM"
+        )
+
+    # Pitch vs tempo note
+    pt_diff = abs(pr - tr) / tr if tr > 0 else 0
+    if pt_diff > _PITCH_TEMPO_TOLERANCE:
+        st_extra = -12 * __import__("math").log2(pr / tr)
+        print(
+            f"\n  Note: Pitch ratio ({pr:.4f}) differs from tempo ratio ({tr:.4f}) "
+            f"by {pt_diff * 100:.1f}%.\n"
+            f"  This suggests an additional pitch shift of ~{st_extra:+.2f} semitones\n"
+            f"  was applied to NCOG on top of the speed-up."
+        )
+    else:
+        print("\n  Pitch and tempo ratios agree — consistent with a pure speed-up.")
+
+    # Warnings
+    if result.warnings:
+        print()
+        for w in result.warnings:
+            # wrap long warnings at 80 chars
+            print(f"  Warning: {w[:200]}")
+
+    # Recommended sox command
+    hqnc_path = _make_hqnc_path(hq)
+    print()
+    print("  Recommended sox command:")
+    print(f"    sox '{hq}' '{hqnc_path}' speed {tr:.6f}")
+
+    # Inverse view
+    if tr > 0:
+        inv = 1.0 / tr
+        inv_note = "(< 1 — this direction would slow HQ down)" if inv < 1 else ""
+        print(f"\n  Inverse (if files are swapped): speed = 1/{tr:.4f} = {inv:.6f}× {inv_note}")
+
+
+def _print_verification_result(
+    result: "pipeline.AnalysisResult",
+    hqnc: Path,
+    ncog: Path,
+) -> None:
+    """Interpret the HQNC-vs-NCOG comparison."""
+    tr = result.tempo_ratio
+    pr = result.pitch_ratio
+
+    print()
+    _hr("═")
+    print("  VERIFICATION RESULTS  (HQNC vs NCOG)")
+    _hr("═")
+    print(f"  Tempo ratio : {tr:.6f}×")
+    print(f"  Pitch ratio : {pr:.6f}")
+
+    tempo_ok = abs(tr - 1.0) < _NEAR_UNITY
+    pitch_ok = abs(pr - 1.0) < _NEAR_UNITY
+
+    if tempo_ok and pitch_ok:
+        print()
+        print("  Files are essentially identical in tempo and pitch.")
+        print("  HQNC is a faithful high-quality recreation of NCOG.")
+    elif tempo_ok and not pitch_ok:
+        st = -12 * __import__("math").log2(pr)
+        print()
+        print(f"  Tempos match, but pitch differs by ~{st:+.2f} semitones.")
+        print("  NCOG appears to have an additional pitch shift on top of the speed-up.")
+        print("  Add a '--pitch' flag to rubberband if you want to undo it.")
+    else:
+        pct_off = (tr - 1.0) * 100
+        print()
+        print(f"  Speed still differs by {pct_off:+.2f}% — sox may have used the wrong factor,")
+        print("  or the source BPM estimate was inaccurate.  Re-run with --energy-gate")
+        print("  adjustments or check that the correct files were provided.")
+
+    # Format / quality
+    print()
+    _print_format_quality(hqnc, ncog, label_hqnc="HQNC", label_ncog="NCOG")
+
+
+def _print_format_quality(
+    hqnc: Path,
+    ncog: Path,
+    label_hqnc: str = "HQNC",
+    label_ncog: str = "NCOG",
+) -> None:
+    lossless = {"flac", "wav", "aiff", "aif", "pcm"}
+    ext_hqnc = hqnc.suffix.lstrip(".").lower()
+    ext_ncog = ncog.suffix.lstrip(".").lower()
+
+    if ext_hqnc in lossless and ext_ncog not in lossless:
+        print(
+            f"  Quality: {label_hqnc} is lossless ({ext_hqnc.upper()}) — higher quality "
+            f"than {label_ncog} ({ext_ncog.upper()}).  {label_ncog} has lossy compression artefacts."
+        )
+    elif ext_ncog in lossless and ext_hqnc not in lossless:
+        print(
+            f"  Warning: {label_ncog} is lossless ({ext_ncog.upper()}) but {label_hqnc} is "
+            f"lossy ({ext_hqnc.upper()}).  Check that files are in the correct order."
+        )
+    elif ext_hqnc not in lossless and ext_ncog not in lossless:
+        print(f"  Both files appear lossy ({ext_hqnc.upper()} / {ext_ncog.upper()}).")
+    else:
+        print(f"  Both files are lossless ({ext_hqnc.upper()} / {ext_ncog.upper()}).")
+
+
+# ── spectral analysis ─────────────────────────────────────────────────────────
+
+def run_spectral_analysis(
+    path_a: Optional[Path] = None,
+    path_b: Optional[Path] = None,
+    label_a: str = "FILE A",
+    label_b: str = "FILE B",
+) -> None:
+    print()
+    _hr("═")
+    print("  SPECTRAL ANALYSIS")
+    _hr("═")
+
+    if path_a is None:
+        path_a = _prompt_file("File A (reference)")
+        label_a = path_a.name
+    if path_b is None:
+        path_b = _prompt_file("File B (other)")
+        label_b = path_b.name
+
+    print()
+    stats_a = spec.analyze(str(path_a), label=label_a)
+    stats_b = spec.analyze(str(path_b), label=label_b)
+
+    spec.compare_and_print(
+        stats_a, stats_b,
+        label_ref=label_a, label_other=label_b,
+        ref_path=str(path_a), other_path=str(path_b),
+    )
+
+
+# ── mode: full suite ──────────────────────────────────────────────────────────
+
+def run_full_suite(hq: Path, ncog: Path) -> None:
+    print()
+    _hr("═")
+    print("  FULL SUITE")
+    _hr("═")
+
+    # Step 1 — speed comparison
+    print("\n  Step 1/3 — Speed comparison  (HQ vs NCOG)")
+    result1 = _run_pipeline(nightcore=ncog, source=hq, step_label="Analysing HQ vs NCOG…")
+    _print_speed_result(result1, hq, ncog)
+
+    tr = result1.tempo_ratio
+
+    # Ask to create HQNC
+    print()
+    ans = _prompt_choice(
+        "  Create HQNC (speed up HQ by the detected factor)?",
+        options="yne",
+    )
+
+    hqnc: Optional[Path] = None
+    if ans == "y":
+        hqnc = _make_hqnc_path(hq)
+        _run_sox(hq, hqnc, tr)
+
+    # Step 2 — verification
+    if hqnc and hqnc.is_file():
+        print(f"\n  Step 2/3 — Verification  (HQNC vs NCOG)")
+        result2 = _run_pipeline(nightcore=ncog, source=hqnc, step_label="Analysing HQNC vs NCOG…")
+        _print_verification_result(result2, hqnc, ncog)
+    else:
+        print("\n  Step 2/3 — Skipped (no HQNC created).")
+
+    # Step 3 — spectral analysis
+    print()
+    ans2 = _prompt_choice("  Run spectral analysis?", options="yn")
+    if ans2 == "y":
+        if hqnc and hqnc.is_file():
+            run_spectral_analysis(
+                path_a=hqnc, path_b=ncog,
+                label_a=f"HQNC ({hqnc.name})",
+                label_b=f"NCOG ({ncog.name})",
+            )
+        else:
+            # No HQNC — compare HQ vs NCOG spectrally
+            run_spectral_analysis(
+                path_a=hq, path_b=ncog,
+                label_a=f"HQ ({hq.name})",
+                label_b=f"NCOG ({ncog.name})",
+            )
+
+
+# ── mode: speed comparison ────────────────────────────────────────────────────
+
+def run_speed_comparison(hq: Path, ncog: Path) -> None:
+    print()
+    _hr("═")
+    print("  SPEED COMPARISON")
+    _hr("═")
+
+    result = _run_pipeline(nightcore=ncog, source=hq, step_label="Analysing HQ vs NCOG…")
+    _print_speed_result(result, hq, ncog)
+
+    tr = result.tempo_ratio
+    tempo_same = abs(tr - 1.0) < _NEAR_UNITY
+    pr = result.pitch_ratio
+    pitch_same = abs(pr - 1.0) < _NEAR_UNITY
+
+    hqnc: Optional[Path] = None
+
+    if tempo_same and pitch_same:
+        print("\n  Files appear to be at the same speed and pitch.")
+    else:
+        if not tempo_same:
+            print()
+            ans = _prompt_choice(
+                "  Create HQNC (speed up HQ by the detected factor)?",
+                options="yne",
+            )
+            if ans == "y":
+                hqnc = _make_hqnc_path(hq)
+                _run_sox(hq, hqnc, tr)
+
+    # Spectral
+    print()
+    ans2 = _prompt_choice("  Run spectral analysis?", options="yn")
+    if ans2 == "y":
+        if hqnc and hqnc.is_file():
+            run_spectral_analysis(
+                path_a=hqnc, path_b=ncog,
+                label_a=f"HQNC ({hqnc.name})",
+                label_b=f"NCOG ({ncog.name})",
+            )
+        else:
+            run_spectral_analysis(
+                path_a=hq, path_b=ncog,
+                label_a=f"HQ ({hq.name})",
+                label_b=f"NCOG ({ncog.name})",
+            )
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    args = sys.argv[1:]
+    hq_arg   = args[0] if len(args) > 0 else None
+    ncog_arg = args[1] if len(args) > 1 else None
+
+    print()
+    _hr("═")
+    print("  NIGHTCORE ANALYZER — WORKFLOW")
+    _hr("═")
+    print("  [f]  Full suite  (speed comparison → create HQNC → verification → spectral)")
+    print("  [s]  Speed comparison  (+ optional HQNC creation + optional spectral)")
+    print("  [a]  Spectral analysis  (standalone two-file comparison)")
+    print("  [e]  Exit")
+    print()
+
+    mode = _prompt_choice("Choose mode", options="fsae")
+
+    if mode == "a":
+        run_spectral_analysis()
+        return
+
+    # Modes f and s need HQ + NCOG
+    print()
+    hq   = _prompt_file("HQ source file (original, high-quality)", hq_arg)
+    ncog = _prompt_file("NCOG file (original nightcore edit)",      ncog_arg)
+
+    if mode == "f":
+        run_full_suite(hq, ncog)
+    else:
+        run_speed_comparison(hq, ncog)
+
+
+if __name__ == "__main__":
+    main()
