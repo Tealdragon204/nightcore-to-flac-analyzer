@@ -103,7 +103,12 @@ def run(
 
     # ── 6. consensus + classification ─────────────────────────────────────────
     _log("Computing consensus…")
-    result = build_result(src_pitches, nc_pitches, src_tempos, nc_tempos)
+    nc_duration  = len(nc_audio)  / sr
+    src_duration = len(src_audio) / sr
+    result = build_result(
+        src_pitches, nc_pitches, src_tempos, nc_tempos,
+        nc_duration=nc_duration, src_duration=src_duration,
+    )
 
     _log("Done.")
     return result

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox,
-    QFormLayout, QPushButton, QApplication, QFrame,
+    QFormLayout, QPushButton, QApplication, QFrame, QPlainTextEdit,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -67,6 +67,23 @@ class ResultsPanel(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         results_layout.addWidget(sep)
+
+        # Warnings box (hidden when no warnings)
+        self._warnings_box = QWidget()
+        warnings_layout = QVBoxLayout(self._warnings_box)
+        warnings_layout.setContentsMargins(0, 0, 0, 0)
+        warnings_label = QLabel("Warnings:")
+        warnings_label.setStyleSheet("font-weight: bold; color: #e67e22;")
+        warnings_layout.addWidget(warnings_label)
+        self._warnings_text = QPlainTextEdit()
+        self._warnings_text.setReadOnly(True)
+        self._warnings_text.setFixedHeight(80)
+        self._warnings_text.setStyleSheet(
+            "background:#fff3cd; color:#856404; font-size:11px; border:1px solid #ffc107; border-radius:3px;"
+        )
+        warnings_layout.addWidget(self._warnings_text)
+        self._warnings_box.hide()
+        results_layout.addWidget(self._warnings_box)
 
         # Tempo group
         tempo_group = QGroupBox("Tempo Ratio")
@@ -139,6 +156,13 @@ class ResultsPanel(QWidget):
             f"background-color:{bg}; color:{fg}; border-radius:4px;"
         )
 
+        # Warnings
+        if result.warnings:
+            self._warnings_text.setPlainText("\n\n".join(result.warnings))
+            self._warnings_box.show()
+        else:
+            self._warnings_box.hide()
+
         # Tempo
         self._tempo_ratio.setText(f"{result.tempo_ratio:.6f}")
         lo, hi = result.tempo_ci
@@ -166,6 +190,7 @@ class ResultsPanel(QWidget):
     def clear(self) -> None:
         """Reset to placeholder state."""
         self._results_widget.hide()
+        self._warnings_box.hide()
         self._placeholder.show()
 
     # ── private ───────────────────────────────────────────────────────────────

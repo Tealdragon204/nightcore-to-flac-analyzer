@@ -54,6 +54,12 @@ CI_LEVEL: float         = 0.95   # confidence level (95 %)
 PURE_NC_TOLERANCE: float = 0.02  # ratio difference below this → same factor
 MIN_VALID: int           = 3     # minimum valid estimates to attempt consensus
 
+# ── sanity-check thresholds ───────────────────────────────────────────────────
+NIGHTCORE_RATIO_MIN: float  = 1.05   # tempo ratio below this → suspicious
+NIGHTCORE_RATIO_MAX: float  = 1.50   # tempo ratio above this → unusual
+NEAR_UNITY_TOLERANCE: float = 0.05   # |ratio − 1| < this → same-speed warning
+WIDE_CI_RELATIVE: float     = 2.0    # (hi − lo) / point > this → pitch CI unreliable
+
 
 # ── result container ──────────────────────────────────────────────────────────
 @dataclass
@@ -112,22 +118,49 @@ class AnalysisResult:
     src_tempos_raw:  Optional[List[Optional[float]]] = None
     nc_tempos_raw:   Optional[List[Optional[float]]] = None
 
+    # ── sanity warnings (populated by build_result) ───────────────────────────
+    warnings: List[str] = field(default_factory=list)
+
     def __str__(self) -> str:
         ci_t = self.tempo_ci
         ci_p = self.pitch_ci
         rb   = self.rubberband
-        return (
-            f"Classification  : {self.classification}\n"
-            f"Tempo ratio     : {self.tempo_ratio:.6f}  "
+        lines: List[str] = []
+
+        # Warnings — printed first so they're impossible to miss
+        for w in self.warnings:
+            lines.append(f"WARNING  : {w}")
+        if self.warnings:
+            lines.append("")
+
+        lines.append(f"Classification  : {self.classification}")
+        lines.append(
+            f"Tempo ratio     : {self.tempo_ratio:.6f}"
             f"  95% CI [{ci_t[0]:.6f}, {ci_t[1]:.6f}]"
-            f"  (from {self.n_source_tempo_windows} src / {self.n_nc_tempo_windows} nc windows)\n"
-            f"Pitch ratio     : {self.pitch_ratio:.6f}  "
-            f"  95% CI [{ci_p[0]:.6f}, {ci_p[1]:.6f}]"
-            f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc windows)\n"
-            f"Rubber Band     : --time {rb.get('time_ratio', '?'):.6f}"
-            f"  --pitch {rb.get('pitch_semitones', '?'):.4f} st\n"
-            f"CLI example     : {rb.get('cli_command', '')}"
+            f"  (from {self.n_source_tempo_windows} src / {self.n_nc_tempo_windows} nc windows)"
         )
+        lines.append(
+            f"Pitch ratio     : {self.pitch_ratio:.6f}"
+            f"  95% CI [{ci_p[0]:.6f}, {ci_p[1]:.6f}]"
+            f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc windows)"
+        )
+
+        # Plain-English speed summary
+        tr = self.tempo_ratio
+        if tr > 0:
+            inv = 1.0 / tr
+            lines.append("")
+            lines.append(f"Speed summary   : nightcore is {tr:.4f}× the source speed")
+            lines.append(f"                  to hear original tempo → play nightcore at {inv:.4f}× speed")
+            lines.append(f"                  (source was sped up by {tr:.4f}× to create the nightcore)")
+
+        lines.append("")
+        lines.append(
+            f"Rubber Band     : --time {rb.get('time_ratio', '?'):.6f}"
+            f"  --pitch {rb.get('pitch_semitones', '?'):.4f} st"
+        )
+        lines.append(f"CLI example     : {rb.get('cli_command', '')}")
+        return "\n".join(lines)
 
 
 # ── internals ─────────────────────────────────────────────────────────────────
@@ -197,9 +230,13 @@ def _rubberband_params(tempo_ratio: float, pitch_ratio: float) -> dict:
     --pitch : lower the pitch to undo the net pitch shift
     """
     pitch_st = -12.0 * math.log2(pitch_ratio)
+    nc_to_source_speed = round(1.0 / tempo_ratio, 6) if tempo_ratio != 0 else None
     rb = {
-        "time_ratio":      round(tempo_ratio, 6),
-        "pitch_semitones": round(pitch_st, 4),
+        "time_ratio":         round(tempo_ratio, 6),
+        "pitch_semitones":    round(pitch_st, 4),
+        # Playback speed to set in a media player to hear nightcore at original tempo:
+        #   e.g. in VLC: Playback → Speed → set to this value
+        "nc_to_source_speed": nc_to_source_speed,
         "cli_command": (
             f"rubberband --time {tempo_ratio:.6f} --pitch {pitch_st:.4f}"
             f" nightcore.flac reconstructed.flac"
@@ -208,12 +245,94 @@ def _rubberband_params(tempo_ratio: float, pitch_ratio: float) -> dict:
     return rb
 
 
+def _check_sanity(
+    tempo_ratio: float,
+    pitch_ratio: float,
+    pitch_ci: Tuple[float, float],
+    nc_duration: Optional[float] = None,
+    src_duration: Optional[float] = None,
+    tempo_was_corrected: bool = False,
+) -> List[str]:
+    """
+    Return a list of human-readable warning strings for suspicious results.
+
+    Checks performed
+    ----------------
+    1. Beat-tracker half-time artefact (auto-corrected if durations supplied)
+    2. Both files the same duration → probably same-version input mistake
+    3. Tempo ratio outside the normal nightcore range (1.05 – 1.50)
+       when no duration correction was possible
+    4. Pitch CI too wide → CREPE could not track pitch reliably
+    """
+    warnings: List[str] = []
+
+    if tempo_was_corrected:
+        # Already flipped in build_result; explain what happened
+        warnings.append(
+            f"Beat-tracker half-time artefact corrected: librosa returned a raw tempo "
+            f"ratio < 1 (nightcore beat-detected at half-time), but the nightcore file "
+            f"({nc_duration:.1f} s) is shorter than the source ({src_duration:.1f} s), "
+            "confirming the nightcore IS faster. The ratio has been inverted "
+            f"to {tempo_ratio:.4f}× automatically. This is a known librosa artefact "
+            "for high-BPM music (>~130 BPM)."
+        )
+    elif nc_duration is not None and src_duration is not None:
+        dur_ratio = nc_duration / src_duration   # < 1 means nc is shorter (faster)
+
+        # Same-duration → likely same version (nightcore-vs-nightcore etc.)
+        if abs(dur_ratio - 1.0) < NEAR_UNITY_TOLERANCE:
+            warnings.append(
+                f"Both files are nearly the same duration "
+                f"({nc_duration:.1f} s vs {src_duration:.1f} s). "
+                "Did you accidentally provide two nightcore files, or two originals? "
+                "A real nightcore should be ~10–35 % shorter than the source."
+            )
+    else:
+        # No duration info — ratio-only fallback checks
+        if abs(tempo_ratio - 1.0) < NEAR_UNITY_TOLERANCE:
+            warnings.append(
+                f"Tempo ratio is {tempo_ratio:.4f} — both files appear to be at the "
+                "same speed. Did you accidentally provide two nightcore files, or two "
+                "originals? A real nightcore should be 1.05–1.50× faster than the source."
+            )
+        elif tempo_ratio < 1.0:
+            inv = round(1.0 / tempo_ratio, 4)
+            warnings.append(
+                f"Tempo ratio is {tempo_ratio:.4f} < 1.0. Two possible causes: "
+                "(1) librosa half-time detection artefact — the true ratio may be "
+                f"{inv:.4f}× (the inverse); or (2) the files are in the wrong order. "
+                "Re-run with the correct original FLAC as --source to disambiguate."
+            )
+        elif tempo_ratio > NIGHTCORE_RATIO_MAX:
+            warnings.append(
+                f"Tempo ratio is {tempo_ratio:.4f}, above the typical nightcore range "
+                f"({NIGHTCORE_RATIO_MIN}–{NIGHTCORE_RATIO_MAX}×). Verify the input files."
+            )
+
+    # Wide pitch CI → CREPE could not reliably track F0
+    if pitch_ratio > 0:
+        ci_span = pitch_ci[1] - pitch_ci[0]
+        if ci_span > WIDE_CI_RELATIVE * pitch_ratio:
+            warnings.append(
+                f"Pitch CI is very wide ({pitch_ci[0]:.3f}–{pitch_ci[1]:.3f}) relative "
+                f"to the point estimate ({pitch_ratio:.4f}). CREPE could not reliably "
+                "track pitch — this is common with polyphonic or heavily processed audio. "
+                "Trust the tempo ratio; treat the pitch ratio and classification as "
+                "approximate."
+            )
+
+    return warnings
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 def build_result(
     src_pitches: List[Optional[float]],
     nc_pitches:  List[Optional[float]],
     src_tempos:  List[Optional[float]],
     nc_tempos:   List[Optional[float]],
+    *,
+    nc_duration:  Optional[float] = None,
+    src_duration: Optional[float] = None,
 ) -> AnalysisResult:
     """
     Run the full consensus step and return an :class:`AnalysisResult`.
@@ -222,6 +341,9 @@ def build_result(
     ----------
     src_pitches, nc_pitches : per-window median F0 (Hz) or None
     src_tempos,  nc_tempos  : per-window BPM estimate or None
+    nc_duration, src_duration : total audio duration in seconds (optional).
+        When provided, the pipeline cross-checks the tempo ratio against the
+        file-length ratio to detect and correct librosa half-time artefacts.
     """
     src_p = _valid(src_pitches)
     nc_p  = _valid(nc_pitches)
@@ -244,8 +366,27 @@ def build_result(
     pitch_ratio, pitch_ci = _bootstrap_ratio(nc_p, src_p)
     tempo_ratio, tempo_ci = _bootstrap_ratio(nc_t, src_t)
 
+    # ── duration cross-check: detect and correct half-time detection artefact ──
+    # Librosa's beat tracker occasionally returns half-time BPMs for fast tracks
+    # (>~130 BPM), making the ratio appear inverted.  When the nightcore is
+    # measurably shorter than the source (i.e. it IS faster) but tempo_ratio < 1,
+    # the evidence strongly indicates a half-time artefact: flip both the point
+    # estimate and the CI.
+    tempo_was_corrected = False
+    if (nc_duration is not None and src_duration is not None
+            and nc_duration < src_duration * 0.99   # nightcore measurably shorter
+            and tempo_ratio < 1.0):                 # but detected as slower
+        tempo_ratio = 1.0 / tempo_ratio
+        lo, hi = tempo_ci
+        tempo_ci = (1.0 / hi, 1.0 / lo)            # invert; bounds swap to stay ordered
+        tempo_was_corrected = True
+
     classification = _classify(tempo_ratio, pitch_ratio, tempo_ci, pitch_ci)
     rubberband     = _rubberband_params(tempo_ratio, pitch_ratio)
+    warnings       = _check_sanity(
+        tempo_ratio, pitch_ratio, pitch_ci,
+        nc_duration, src_duration, tempo_was_corrected,
+    )
 
     return AnalysisResult(
         tempo_ratio=tempo_ratio,
@@ -258,6 +399,7 @@ def build_result(
         n_source_tempo_windows=len(src_t),
         n_nc_tempo_windows=len(nc_t),
         rubberband=rubberband,
+        warnings=warnings,
         src_pitches_raw=list(src_pitches),
         nc_pitches_raw=list(nc_pitches),
         src_tempos_raw=list(src_tempos),
