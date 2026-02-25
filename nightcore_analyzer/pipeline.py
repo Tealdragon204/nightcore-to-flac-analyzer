@@ -135,7 +135,7 @@ def run(
     # windowed BPM median.  Attached to the existing AnalysisResult so all
     # callers automatically receive it.
     _log("Computing IBI ratio (high-precision beat timestamps, hop=64)…")
-    nc_ibis  = estimate_ibis_global(nc_audio,  sr)
+    nc_ibis  = estimate_ibis_global(nc_audio,  sr, start_bpm=nc_start_bpm)
     src_ibis = estimate_ibis_global(src_audio, sr)
     if (nc_ibis  is not None and len(nc_ibis)  >= 4 and
             src_ibis is not None and len(src_ibis) >= 4):

@@ -122,6 +122,7 @@ def estimate_ibis_global(
     sr: int,
     hop_length: int = IBI_HOP_LENGTH,
     min_ibis: int = IBI_MIN_IBIS,
+    start_bpm: float = 120.0,
 ) -> Optional[np.ndarray]:
     """
     Beat-track the full signal at high temporal resolution and return the
@@ -143,6 +144,10 @@ def estimate_ibis_global(
     min_ibis : int
         Minimum number of valid inter-beat intervals required.  Returns None
         if fewer are found (e.g. very short or silent files).
+    start_bpm : float
+        Centre of the tempo prior passed to librosa's beat tracker (default
+        120 BPM).  Pass ``median_src_bpm × (src_duration / nc_duration)``
+        for the nightcore file to prevent harmonic snapping on high-BPM tracks.
 
     Returns
     -------
@@ -155,6 +160,7 @@ def estimate_ibis_global(
         onset_envelope=onset_env,
         sr=sr,
         hop_length=hop_length,
+        start_bpm=start_bpm,
     )
     beat_frames = np.atleast_1d(beat_frames)
     if len(beat_frames) < min_ibis + 1:
