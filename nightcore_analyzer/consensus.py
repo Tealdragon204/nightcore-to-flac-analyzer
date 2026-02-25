@@ -388,20 +388,41 @@ def _check_sanity(
                 "rubberband --time factor."
             )
 
-    # Degenerate tempo CI (lo == hi) → librosa BPM quantisation locked every window
+    # Degenerate tempo CI (lo == hi) → every window returned the same BPM.
+    # Two very different situations produce this:
+    #   (A) Consistent-tempo track (drum machine / eurodance) where the beat
+    #       tracker correctly locks to the same BPM every window — reliable.
+    #   (B) Librosa BPM quantisation artefact — the tracker snapped to the
+    #       wrong grid point; the ratio disagrees with the duration evidence.
     if abs(tempo_ci[1] - tempo_ci[0]) < 0.001:
-        dur_hint = (
-            f" Use the 'Duration-based' CLI command instead of 'CLI (detected)'."
-            if (nc_duration is not None and src_duration is not None) else
-            ""
-        )
-        warnings.append(
-            f"Tempo CI is degenerate [lo = hi = {tempo_ci[0]:.6f}]: every analysis "
-            "window returned the same BPM from librosa. This is a quantisation "
-            "artefact — the beat tracker snapped all windows to the same grid BPM. "
-            "The beat-detected ratio is unreliable; the duration ratio is more "
-            "trustworthy for this track." + dur_hint
-        )
+        if nc_duration is not None and src_duration is not None and nc_duration > 0:
+            dur_speed_ratio = src_duration / nc_duration
+            ratio_mismatch = abs(tempo_ratio - dur_speed_ratio) / dur_speed_ratio
+            if ratio_mismatch < DURATION_TEMPO_MISMATCH_TOLERANCE:
+                warnings.append(
+                    f"Tempo CI is degenerate [lo = hi = {tempo_ci[0]:.6f}]: every "
+                    "analysis window returned the same BPM. This is expected for "
+                    "constant-tempo music (drum machine / eurodance). The detected "
+                    f"ratio ({tempo_ratio:.4f}×) agrees with the duration ratio "
+                    f"({dur_speed_ratio:.4f}×) — result is reliable."
+                )
+            else:
+                warnings.append(
+                    f"Tempo CI is degenerate [lo = hi = {tempo_ci[0]:.6f}] and the "
+                    f"detected ratio ({tempo_ratio:.4f}×) disagrees with the duration "
+                    f"ratio ({dur_speed_ratio:.4f}×) by {ratio_mismatch * 100:.1f}%. "
+                    "This is a librosa BPM quantisation artefact — the beat tracker "
+                    "snapped all windows to the same wrong grid BPM. "
+                    "Use the 'Duration-based' CLI command instead of 'CLI (detected)'."
+                )
+        else:
+            warnings.append(
+                f"Tempo CI is degenerate [lo = hi = {tempo_ci[0]:.6f}]: every "
+                "analysis window returned the same BPM from librosa. This may be a "
+                "quantisation artefact (beat tracker snapped to a fixed grid BPM) or "
+                "simply a constant-tempo track. Provide both file durations to "
+                "distinguish the two cases."
+            )
 
     # Wide pitch CI → CREPE could not reliably track F0
     if pitch_ratio > 0:
