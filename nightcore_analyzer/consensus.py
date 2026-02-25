@@ -130,6 +130,20 @@ class AnalysisResult:
     # ── sanity warnings (populated by build_result) ───────────────────────────
     warnings: List[str] = field(default_factory=list)
 
+    # ── IBI-based speed ratio (higher precision than windowed BPM) ────────────
+    # Populated by pipeline.run() after build_result().  None if beat tracking
+    # on the full signal failed to find enough beats (e.g. very short files).
+    ibi_ratio: Optional[float] = None
+    ibi_ci:    Optional[Tuple[float, float]] = None
+
+    # ── cross-correlation speed ratio (verification step only) ────────────────
+    # Populated by workflow.run_full_suite() during the verification loop after
+    # calling xcorr.estimate_speed_xcorr(hqnc, ncog).
+    # xcorr_ratio   ≈ speed_hqnc / speed_ncog (should be ~1.0 for a good match)
+    # xcorr_quality  ∈ [0, 1], higher = sharper match
+    xcorr_ratio:   Optional[float] = None
+    xcorr_quality: Optional[float] = None
+
     def __str__(self) -> str:
         ci_t = self.tempo_ci
         ci_p = self.pitch_ci
@@ -230,6 +244,51 @@ def _bootstrap_ratio(
         nc_s  = rng.choice(nc_vals,  size=len(nc_vals),  replace=True)
         src_s = rng.choice(src_vals, size=len(src_vals), replace=True)
         boot[i] = np.median(nc_s) / np.median(src_s)
+
+    alpha = (1.0 - ci) / 2.0
+    lo = float(np.percentile(boot, alpha * 100))
+    hi = float(np.percentile(boot, (1.0 - alpha) * 100))
+    return point, (lo, hi)
+
+
+def compute_ibi_ratio(
+    nc_ibis: np.ndarray,
+    src_ibis: np.ndarray,
+    n_boot: int = N_BOOTSTRAP,
+    ci: float = CI_LEVEL,
+) -> Tuple[float, Tuple[float, float]]:
+    """
+    Compute the speed ratio from inter-beat intervals collected at high
+    resolution (hop_length=64) over the full signal.
+
+    ``ratio = median(src_ibis) / median(nc_ibis)``
+
+    This is mathematically equivalent to ``nc_BPM / src_BPM`` but uses raw
+    beat timestamps rather than summarised per-window BPM floats, giving
+    ~0.01% precision versus the ~0.1–0.3% of the windowed BPM median.
+
+    Parameters
+    ----------
+    nc_ibis, src_ibis : np.ndarray
+        Inter-beat intervals (seconds) from :func:`tempo.estimate_ibis_global`.
+    n_boot : int
+        Bootstrap iterations for the CI (default 2000).
+    ci : float
+        Confidence level for the CI (default 0.95).
+
+    Returns
+    -------
+    (ratio, (lo, hi))
+        Point estimate and 95 % bootstrap CI.
+    """
+    rng   = np.random.default_rng(seed=42)
+    point = float(np.median(src_ibis) / np.median(nc_ibis))
+
+    boot = np.empty(n_boot)
+    for i in range(n_boot):
+        s = rng.choice(src_ibis, size=len(src_ibis), replace=True)
+        n = rng.choice(nc_ibis,  size=len(nc_ibis),  replace=True)
+        boot[i] = np.median(s) / np.median(n)
 
     alpha = (1.0 - ci) / 2.0
     lo = float(np.percentile(boot, alpha * 100))

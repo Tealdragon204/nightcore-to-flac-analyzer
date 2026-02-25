@@ -31,6 +31,7 @@ from typing import Optional
 
 from . import pipeline
 from . import spectral as spec
+from . import xcorr
 
 
 # ── I/O helpers ───────────────────────────────────────────────────────────────
@@ -144,13 +145,18 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
     _hr("═")
     print("  SPEED COMPARISON RESULTS")
     _hr("═")
-    print(f"  Speed factor  : {tr:.6f}×")
+    print(f"  Speed factor  : {tr:.6f}×  (windowed BPM ratio)")
+    if result.ibi_ratio is not None:
+        print(f"  IBI ratio     : {result.ibi_ratio:.6f}×  (beat timestamps — higher precision)")
     print(f"  Pitch ratio   : {pr:.6f}")
     print(f"  Classification: {result.classification}")
 
     # CIs
     lo, hi = result.tempo_ci
     print(f"  Tempo 95% CI  : [{lo:.4f}, {hi:.4f}]")
+    if result.ibi_ci is not None:
+        lo_i, hi_i = result.ibi_ci
+        print(f"  IBI   95% CI  : [{lo_i:.6f}, {hi_i:.6f}]")
     lo_p, hi_p = result.pitch_ci
     print(f"  Pitch 95% CI  : [{lo_p:.4f}, {hi_p:.4f}]")
 
@@ -202,8 +208,14 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
     # ── Recommended sox command ────────────────────────────────────────────────
     hqnc_path = _make_hqnc_path(hq)
     print()
-    print("  Recommended sox command:")
-    print(f"    sox '{hq}' '{hqnc_path}' speed {tr:.6f}")
+    if result.ibi_ratio is not None:
+        print("  Recommended sox command (IBI — higher precision):")
+        print(f"    sox '{hq}' '{hqnc_path}' speed {result.ibi_ratio:.6f}")
+        print("  Alternative (windowed BPM ratio):")
+        print(f"    sox '{hq}' '{hqnc_path}' speed {tr:.6f}")
+    else:
+        print("  Recommended sox command:")
+        print(f"    sox '{hq}' '{hqnc_path}' speed {tr:.6f}")
 
 
 def _print_verification_result(
@@ -226,10 +238,26 @@ def _print_verification_result(
     _hr("═")
     print(f"  Comparing : {hqnc.name}")
     print(f"       vs   : {ncog.name}")
-    print(f"  Tempo ratio : {tr:.6f}×")
-    print(f"  Pitch ratio : {pr:.6f}")
+    print(f"  BPM ratio  : {tr:.6f}×  (windowed, ±{_NEAR_UNITY * 100:.0f}% tolerance)")
+    if result.ibi_ratio is not None:
+        lo_i, hi_i = result.ibi_ci or (result.ibi_ratio, result.ibi_ratio)
+        print(f"  IBI ratio  : {result.ibi_ratio:.6f}×  95% CI [{lo_i:.6f}, {hi_i:.6f}]")
+    if result.xcorr_ratio is not None:
+        qlabel = xcorr.quality_label(result.xcorr_quality or 0.0)
+        print(
+            f"  Xcorr ratio: {result.xcorr_ratio:.6f}×"
+            f"  quality {result.xcorr_quality:.2f} ({qlabel})"
+        )
+    print(f"  Pitch ratio: {pr:.6f}")
 
-    tempo_ok = abs(tr - 1.0) < _NEAR_UNITY
+    # Use IBI ratio for the tolerance check when available (it is more precise)
+    best_ratio = result.ibi_ratio if result.ibi_ratio is not None else tr
+    ibi_tolerance = 0.005  # 0.5% for IBI, vs 2% for BPM
+    tempo_ok = (
+        abs(best_ratio - 1.0) < ibi_tolerance
+        if result.ibi_ratio is not None
+        else abs(tr - 1.0) < _NEAR_UNITY
+    )
     pitch_ok = abs(pr - 1.0) < _NEAR_UNITY
 
     if tempo_ok and pitch_ok:
@@ -341,7 +369,8 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
         )
 
     hqnc: Optional[Path] = None
-    current_speed = tr
+    # Use IBI ratio as the speed factor for sox when available (more precise)
+    current_speed = result1.ibi_ratio if result1.ibi_ratio is not None else tr
     upd_version = 0
     if ans == "y":
         hqnc = _make_hqnc_path_v(hq, upd_version)
@@ -362,21 +391,31 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
                 nightcore=ncog, source=hqnc,
                 step_label="Analysing HQNC vs NCOG…",
             )
+
+            # Attach cross-correlation result before printing (verification only)
+            print(f"  Running cross-correlation verification…")
+            xcorr_r, xcorr_q = xcorr.estimate_speed_xcorr(hqnc, ncog)
+            result2.xcorr_ratio   = xcorr_r
+            result2.xcorr_quality = xcorr_q
+
             tempo_ok = _print_verification_result(result2, hqnc, ncog)
 
             if tempo_ok:
                 break  # good enough — proceed to spectral
 
             # ── Offer corrected re-run ────────────────────────────────────────
-            corrected_speed = current_speed * result2.tempo_ratio
+            # Prefer IBI ratio for the corrected factor (more precise than BPM)
+            residual_ratio = result2.ibi_ratio if result2.ibi_ratio is not None else result2.tempo_ratio
+            corrected_speed = current_speed * residual_ratio
             upd_version += 1
             next_hqnc = _make_hqnc_path_v(hq, upd_version)
-            pct_off = (result2.tempo_ratio - 1.0) * 100
+            pct_off = (residual_ratio - 1.0) * 100
 
             print()
             print(f"  Speed is still off by {pct_off:+.2f}%.")
+            estimator = "IBI" if result2.ibi_ratio is not None else "BPM"
             print(
-                f"  Corrected factor: {current_speed:.6f} × {result2.tempo_ratio:.6f}"
+                f"  Corrected factor ({estimator}): {current_speed:.6f} × {residual_ratio:.6f}"
                 f" = {corrected_speed:.6f}×"
             )
             print(f"  Would create: {next_hqnc.name}")
