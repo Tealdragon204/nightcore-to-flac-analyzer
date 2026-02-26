@@ -149,6 +149,15 @@ def _lr_listening_test(hqnc: Path, ncog: Path) -> Optional[float]:
     ratio = 1.0
     step  = _LR_NUDGE_COARSE
 
+    # Detect NCOG's sample rate once; force both temp WAVs to this rate so
+    # sox -M can merge them (it requires identical sample rates on all inputs).
+    # The sox `speed` effect also shifts the output sample-rate proportionally,
+    # so we must resample explicitly.  soxi ships with sox; fall back to 44100.
+    _sr_proc = subprocess.run(
+        ["soxi", "-r", str(ncog)], capture_output=True, text=True
+    )
+    _sr_out = _sr_proc.stdout.strip() if _sr_proc.returncode == 0 else "44100"
+
     while True:
         ts      = int(time.time())
         tmpdir  = Path(tempfile.gettempdir())
@@ -158,16 +167,17 @@ def _lr_listening_test(hqnc: Path, ncog: Path) -> Optional[float]:
         try:
             print(f"\n  Building L/R mix (HQNC × {ratio:.6f} → left, NCOG → right)…")
             subprocess.run(
-                ["sox", str(hqnc), str(tmp_l),
+                ["sox", str(hqnc), "-r", _sr_out, str(tmp_l),
                  "speed", f"{ratio:.6f}", "remix", "1", "0"],
                 check=True,
             )
             subprocess.run(
-                ["sox", str(ncog), str(tmp_r), "remix", "0", "1"],
+                ["sox", str(ncog), "-r", _sr_out, str(tmp_r),
+                 "remix", "0", "1"],
                 check=True,
             )
             subprocess.run(
-                ["sox", "-M", str(tmp_l), str(tmp_r), str(tmp_out)],
+                ["sox", "-G", "-M", str(tmp_l), str(tmp_r), str(tmp_out)],
                 check=True,
             )
             print("  Playing — Ctrl+C to stop early.")
