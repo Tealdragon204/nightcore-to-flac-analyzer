@@ -255,6 +255,11 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
         print(f"  IBI ratio     : {result.ibi_ratio:.6f}×  (beat timestamps — higher precision)")
     print(f"  Pitch ratio   : {pr:.6f}")
     print(f"  Classification: {result.classification}")
+    if result.intro_offset_sec is not None:
+        print(
+            f"  Intro offset  : {result.intro_offset_sec:.2f}s trimmed from source"
+            f"  (musical intro detected and excluded from analysis)"
+        )
 
     # CIs
     lo, hi = result.tempo_ci
@@ -347,6 +352,11 @@ def _print_verification_result(
     if result.ibi_ratio is not None:
         lo_i, hi_i = result.ibi_ci or (result.ibi_ratio, result.ibi_ratio)
         print(f"  IBI ratio  : {result.ibi_ratio:.6f}×  95% CI [{lo_i:.6f}, {hi_i:.6f}]")
+    if result.intro_offset_sec is not None:
+        print(
+            f"  Intro trim : {result.intro_offset_sec:.2f}s removed from source"
+            f"  (intro excluded from verification)"
+        )
     xcorr_poor = False
     if result.xcorr_ratio is not None:
         q = result.xcorr_quality or 0.0

@@ -97,6 +97,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable leading/trailing silence stripping entirely.",
     )
     p.add_argument(
+        "--no-auto-align",
+        action="store_true",
+        help=(
+            "Disable automatic intro-offset detection. "
+            "Use this if the source has no musical intro or if alignment "
+            "is producing incorrect results."
+        ),
+    )
+    p.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="Suppress progress output (errors still go to stderr)",
@@ -137,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             hop_sec=args.hop,
             energy_gate_db=args.energy_gate,
             silence_strip_db=silence_strip_db,
+            auto_align=not args.no_auto_align,
             log=log,
         )
     except Exception as exc:

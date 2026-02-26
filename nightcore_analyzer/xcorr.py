@@ -41,6 +41,15 @@ XCORR_RMS_GATE:     float = 1e-3    # skip silent windows below this RMS
 XCORR_QUALITY_GOOD: float = 0.70
 XCORR_QUALITY_FAIR: float = 0.40
 
+# ── content-alignment tunables ────────────────────────────────────────────────
+ALIGN_SR:          int   = 11025   # downsample rate for envelope computation
+ALIGN_HOP:         int   =   512   # hop ≈ 0.046 s at 11025 Hz
+ALIGN_SPEED_LO:    float =  1.03   # minimum nightcore speed to search
+ALIGN_SPEED_HI:    float =  1.50   # maximum nightcore speed to search
+ALIGN_N_SPEEDS:    int   =    30   # candidate speed steps
+ALIGN_MAX_OFFSET:  float = 120.0   # never trim more than 2 min from src
+ALIGN_MIN_OFFSET:  float =   1.0   # ignore detected offsets below this (s)
+
 
 def estimate_speed_xcorr(
     path_a: Union[str, Path],
@@ -151,6 +160,103 @@ def estimate_speed_xcorr(
     quality = float(np.median(qualities))
 
     return slope, quality
+
+
+def find_content_offset(
+    src_audio: np.ndarray,
+    nc_audio:  np.ndarray,
+    sr: int,
+    *,
+    speed_lo: float = ALIGN_SPEED_LO,
+    speed_hi: float = ALIGN_SPEED_HI,
+    n_speeds: int   = ALIGN_N_SPEEDS,
+    max_offset_sec: float = ALIGN_MAX_OFFSET,
+) -> Tuple[float, float]:
+    """
+    Detect how many seconds of *src_audio* precede the content that matches
+    the start of *nc_audio* (i.e. a musical intro present in src but not nc).
+
+    Uses a coarse RMS energy envelope cross-correlation over a grid of
+    candidate nightcore speeds.  For each speed the NCOG envelope is stretched
+    to the HQ time scale (divided by speed) and cross-correlated against the
+    HQ envelope within the first *max_offset_sec* seconds.  The (speed, lag)
+    pair with the highest normalised peak is returned.
+
+    Parameters
+    ----------
+    src_audio : np.ndarray
+        Mono float32 source audio (HQ or HQNC, may have a musical intro).
+    nc_audio : np.ndarray
+        Mono float32 nightcore audio (NCOG, silence already stripped).
+    sr : int
+        Sample rate shared by both arrays (from ``load_audio``).
+    speed_lo, speed_hi, n_speeds
+        Grid of candidate nightcore speed ratios to search.
+    max_offset_sec : float
+        Cap on the intro length searched (default 120 s).
+
+    Returns
+    -------
+    (offset_sec, speed_est) : Tuple[float, float]
+        *offset_sec* — seconds to skip at the start of src_audio.
+        *speed_est*  — rough speed estimate from the alignment search.
+        Returns ``(0.0, 1.0)`` when the arrays are too short to analyse.
+    """
+    # Downsample both to a coarse rate — envelopes need no HF content
+    src_ds = librosa.resample(src_audio, orig_sr=sr, target_sr=ALIGN_SR)
+    nc_ds  = librosa.resample(nc_audio,  orig_sr=sr, target_sr=ALIGN_SR)
+
+    # RMS energy envelopes (1-D)
+    src_env = librosa.feature.rms(y=src_ds, hop_length=ALIGN_HOP)[0].astype(np.float64)
+    nc_env  = librosa.feature.rms(y=nc_ds,  hop_length=ALIGN_HOP)[0].astype(np.float64)
+
+    hop_sec           = ALIGN_HOP / ALIGN_SR          # ≈ 0.046 s
+    max_offset_frames = int(max_offset_sec / hop_sec)
+
+    best_score  = -1.0
+    best_offset = 0.0
+    best_speed  = (speed_lo + speed_hi) / 2.0
+
+    for speed in np.linspace(speed_lo, speed_hi, n_speeds):
+        # Stretch nc envelope to src time scale (slow it down by 1/speed)
+        n_stretched = int(len(nc_env) / speed)
+        if n_stretched < 4:
+            continue
+        if n_stretched >= len(src_env):
+            continue  # stretched nc ≥ src — no room for an intro offset
+
+        # Linear-interpolation resample (numpy-only; coarse envelope is fine)
+        x_orig   = np.linspace(0.0, 1.0, len(nc_env))
+        x_new    = np.linspace(0.0, 1.0, n_stretched)
+        stretched = np.interp(x_new, x_orig, nc_env)
+
+        # Search only the first max_offset_frames lags
+        search_len = min(max_offset_frames, len(src_env) - n_stretched)
+        if search_len <= 0:
+            continue
+
+        src_search = src_env[:search_len + n_stretched]
+        corr = np.correlate(src_search, stretched, mode='valid')
+        corr = corr[:search_len + 1]
+
+        if len(corr) == 0:
+            continue
+
+        peak_idx = int(np.argmax(corr))
+        peak_val = float(corr[peak_idx])
+
+        # Normalise to cosine-like score
+        win_energy   = float(np.sum(src_env[peak_idx:peak_idx + n_stretched] ** 2))
+        query_energy = float(np.sum(stretched ** 2))
+        denom = np.sqrt(win_energy * query_energy)
+        score = peak_val / denom if denom > 1e-12 else 0.0
+
+        if score > best_score:
+            best_score  = score
+            best_offset = peak_idx * hop_sec
+            best_speed  = speed
+
+    return best_offset, best_speed
 
 
 def quality_label(quality: float) -> str:
