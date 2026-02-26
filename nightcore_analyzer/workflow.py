@@ -168,12 +168,12 @@ def _lr_listening_test(hqnc: Path, ncog: Path) -> Optional[float]:
             print(f"\n  Building L/R mix (HQNC × {ratio:.6f} → left, NCOG → right)…")
             subprocess.run(
                 ["sox", str(hqnc), "-r", _sr_out, str(tmp_l),
-                 "speed", f"{ratio:.6f}", "remix", "1", "0"],
+                 "speed", f"{ratio:.6f}", "remix", "1"],
                 check=True,
             )
             subprocess.run(
                 ["sox", str(ncog), "-r", _sr_out, str(tmp_r),
-                 "remix", "0", "1"],
+                 "remix", "1"],
                 check=True,
             )
             subprocess.run(
