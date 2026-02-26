@@ -228,7 +228,12 @@ _LR_NUDGE_COARSE    = 0.001  # coarse nudge step for L/R listening test
 _LR_NUDGE_FINE      = 0.0001 # fine nudge step for L/R listening test
 
 
-def _run_pipeline(nightcore: Path, source: Path, step_label: str) -> "pipeline.AnalysisResult":
+def _run_pipeline(
+    nightcore: Path,
+    source: Path,
+    step_label: str,
+    src_trim_sec: float = 0.0,
+) -> "pipeline.AnalysisResult":
     print()
     _hr("─")
     print(f"  {step_label}")
@@ -237,7 +242,11 @@ def _run_pipeline(nightcore: Path, source: Path, step_label: str) -> "pipeline.A
     print(f"  Source    : {source.name}")
     print()
 
-    result = pipeline.run(str(nightcore), str(source), log=lambda m: print(f"  {m}"))
+    result = pipeline.run(
+        str(nightcore), str(source),
+        src_trim_sec=src_trim_sec,
+        log=lambda m: print(f"  {m}"),
+    )
     return result
 
 
@@ -477,7 +486,7 @@ def run_spectral_analysis(
 
 # ── mode: full suite ──────────────────────────────────────────────────────────
 
-def run_full_suite(hq: Path, ncog: Path) -> None:
+def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
     print()
     _hr("═")
     print("  FULL SUITE")
@@ -485,7 +494,11 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
 
     # Step 1 — speed comparison
     print("\n  Step 1/3 — Speed comparison  (HQ vs NCOG)")
-    result1 = _run_pipeline(nightcore=ncog, source=hq, step_label="Analysing HQ vs NCOG…")
+    result1 = _run_pipeline(
+        nightcore=ncog, source=hq,
+        step_label="Analysing HQ vs NCOG…",
+        src_trim_sec=src_trim_sec,
+    )
     _print_speed_result(result1, hq, ncog)
 
     tr = result1.tempo_ratio
@@ -643,13 +656,17 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
 
 # ── mode: speed comparison ────────────────────────────────────────────────────
 
-def run_speed_comparison(hq: Path, ncog: Path) -> None:
+def run_speed_comparison(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
     print()
     _hr("═")
     print("  SPEED COMPARISON")
     _hr("═")
 
-    result = _run_pipeline(nightcore=ncog, source=hq, step_label="Analysing HQ vs NCOG…")
+    result = _run_pipeline(
+        nightcore=ncog, source=hq,
+        step_label="Analysing HQ vs NCOG…",
+        src_trim_sec=src_trim_sec,
+    )
     _print_speed_result(result, hq, ncog)
 
     tr = result.tempo_ratio
@@ -708,9 +725,14 @@ def run_speed_comparison(hq: Path, ncog: Path) -> None:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    args = sys.argv[1:]
-    ncog_arg = args[0] if len(args) > 0 else None
-    hq_arg   = args[1] if len(args) > 1 else None
+    import argparse as _argparse
+    _p = _argparse.ArgumentParser(add_help=False)
+    _p.add_argument("--src-trim-sec", type=float, default=0.0)
+    _known, _rest = _p.parse_known_args(sys.argv[1:])
+    src_trim_sec = _known.src_trim_sec
+
+    ncog_arg = _rest[0] if len(_rest) > 0 else None
+    hq_arg   = _rest[1] if len(_rest) > 1 else None
 
     print()
     _hr("═")
@@ -734,9 +756,9 @@ def main() -> None:
     hq   = _prompt_file("HQ source (original high-quality)", hq_arg)
 
     if mode == "f":
-        run_full_suite(hq, ncog)
+        run_full_suite(hq, ncog, src_trim_sec=src_trim_sec)
     else:
-        run_speed_comparison(hq, ncog)
+        run_speed_comparison(hq, ncog, src_trim_sec=src_trim_sec)
 
 
 if __name__ == "__main__":

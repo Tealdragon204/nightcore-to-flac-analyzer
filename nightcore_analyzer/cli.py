@@ -97,12 +97,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable leading/trailing silence stripping entirely.",
     )
     p.add_argument(
-        "--no-auto-align",
-        action="store_true",
+        "--src-trim-sec",
+        type=float,
+        default=0.0,
+        metavar="SEC",
         help=(
-            "Disable automatic intro-offset detection. "
-            "Use this if the source has no musical intro or if alignment "
-            "is producing incorrect results."
+            "Manually trim this many seconds from the start of the source file "
+            "before analysis.  Use when the source has a musical intro not present "
+            "in the nightcore (e.g. --src-trim-sec 2.5).  "
+            "Takes priority over --auto-align when set."
+        ),
+    )
+    p.add_argument(
+        "--auto-align",
+        action="store_true",
+        default=False,
+        help=(
+            "Attempt automatic intro-offset detection via RMS envelope correlation.  "
+            "Unreliable on repetitive-structure music (dance, euro-pop); a wrong "
+            "trim is worse than no trim.  Prefer --src-trim-sec for manual control."
         ),
     )
     p.add_argument(
@@ -146,7 +159,8 @@ def main(argv: list[str] | None = None) -> int:
             hop_sec=args.hop,
             energy_gate_db=args.energy_gate,
             silence_strip_db=silence_strip_db,
-            auto_align=not args.no_auto_align,
+            src_trim_sec=args.src_trim_sec,
+            auto_align=args.auto_align and args.src_trim_sec == 0.0,
             log=log,
         )
     except Exception as exc:
