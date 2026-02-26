@@ -144,6 +144,11 @@ class AnalysisResult:
     xcorr_ratio:   Optional[float] = None
     xcorr_quality: Optional[float] = None
 
+    # ── content-alignment (intro detection) ───────────────────────────────────
+    # Set by pipeline.run() when auto_align=True and an intro is detected in
+    # the source.  Seconds trimmed from the start of src_audio before analysis.
+    intro_offset_sec: Optional[float] = None
+
     def __str__(self) -> str:
         ci_t = self.tempo_ci
         ci_p = self.pitch_ci

@@ -17,6 +17,7 @@ from .io import (
 from .pitch import batch_estimate_pitch
 from .tempo import batch_estimate_tempo, estimate_ibis_global
 from .consensus import build_result, compute_ibi_ratio, AnalysisResult
+from .xcorr import find_content_offset, ALIGN_MIN_OFFSET
 
 
 def run(
@@ -27,6 +28,7 @@ def run(
     hop_sec: float = HOP_SEC,
     energy_gate_db: float = ENERGY_GATE_DB,
     silence_strip_db: Optional[float] = SILENCE_STRIP_DB,
+    auto_align: bool = True,
     log: Optional[Callable[[str], None]] = print,
 ) -> AnalysisResult:
     """
@@ -86,6 +88,24 @@ def run(
             f"  source:    −{src_lead:.2f}s leading, −{src_trail:.2f}s trailing"
             f"  →  {len(src_audio)/sr:.1f} s"
         )
+
+    # ── 1c. content-alignment: detect and skip musical intro in src ───────────
+    intro_offset_sec: Optional[float] = None
+    if auto_align:
+        _log("Detecting intro offset (RMS envelope alignment)…")
+        raw_offset, align_speed = find_content_offset(src_audio, nc_audio, sr)
+        if raw_offset >= ALIGN_MIN_OFFSET:
+            src_audio = src_audio[int(raw_offset * sr):]
+            intro_offset_sec = raw_offset
+            _log(
+                f"  Intro detected — trimming {raw_offset:.2f}s from source start"
+                f"  (speed hint: {align_speed:.4f}×)"
+            )
+        else:
+            _log(
+                f"  No significant intro offset detected"
+                f"  (raw: {raw_offset:.2f}s < {ALIGN_MIN_OFFSET:.1f}s threshold)"
+            )
 
     # ── 2. window ─────────────────────────────────────────────────────────────
     _log(f"Slicing into {window_sec:.0f} s windows (hop {hop_sec:.0f} s)…")
@@ -148,6 +168,8 @@ def run(
         src_pitches, nc_pitches, src_tempos, nc_tempos,
         nc_duration=nc_duration, src_duration=src_duration,
     )
+
+    result.intro_offset_sec = intro_offset_sec
 
     # ── 7. IBI ratio pass (full-signal, high-resolution beat timestamps) ───────
     # Runs beat tracking at hop_length=64 (≈1.45 ms) over the entire signal,
