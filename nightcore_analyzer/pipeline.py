@@ -11,8 +11,8 @@ import numpy as np
 from typing import Callable, Optional
 
 from .io import (
-    load_audio, slice_windows, energy_gate,
-    WINDOW_SEC, HOP_SEC, ENERGY_GATE_DB,
+    load_audio, strip_silence, slice_windows, energy_gate,
+    WINDOW_SEC, HOP_SEC, ENERGY_GATE_DB, SILENCE_STRIP_DB,
 )
 from .pitch import batch_estimate_pitch
 from .tempo import batch_estimate_tempo, estimate_ibis_global
@@ -26,6 +26,7 @@ def run(
     window_sec: float = WINDOW_SEC,
     hop_sec: float = HOP_SEC,
     energy_gate_db: float = ENERGY_GATE_DB,
+    silence_strip_db: Optional[float] = SILENCE_STRIP_DB,
     log: Optional[Callable[[str], None]] = print,
 ) -> AnalysisResult:
     """
@@ -45,6 +46,11 @@ def run(
     energy_gate_db : float
         Windows whose RMS energy is below peak − |energy_gate_db| dB are
         discarded as silence / low-energy artefacts (default −40 dB).
+    silence_strip_db : float or None
+        Top-dB threshold for trimming leading/trailing silence from each
+        audio file before windowing.  Uses librosa.effects.trim: a frame
+        is silent when its power is more than *silence_strip_db* dB below
+        the peak frame (default 60 dB).  Pass ``None`` to disable.
     log : callable or None
         Called with progress messages.  Pass ``None`` to suppress output.
 
@@ -66,6 +72,20 @@ def run(
     _log("Loading source audio…")
     src_audio, _ = load_audio(source_path, sr=sr)
     _log(f"  {len(src_audio) / sr:.1f} s  ({len(src_audio):,} samples @ {sr} Hz)")
+
+    # ── 1b. strip leading/trailing silence ────────────────────────────────────
+    if silence_strip_db is not None:
+        _log(f"Stripping silence (top_db={silence_strip_db} dB)…")
+        nc_audio,  nc_lead,  nc_trail  = strip_silence(nc_audio,  sr, silence_strip_db)
+        src_audio, src_lead, src_trail = strip_silence(src_audio, sr, silence_strip_db)
+        _log(
+            f"  nightcore: −{nc_lead:.2f}s leading, −{nc_trail:.2f}s trailing"
+            f"  →  {len(nc_audio)/sr:.1f} s"
+        )
+        _log(
+            f"  source:    −{src_lead:.2f}s leading, −{src_trail:.2f}s trailing"
+            f"  →  {len(src_audio)/sr:.1f} s"
+        )
 
     # ── 2. window ─────────────────────────────────────────────────────────────
     _log(f"Slicing into {window_sec:.0f} s windows (hop {hop_sec:.0f} s)…")

@@ -1,9 +1,11 @@
 """
-Audio I/O, windowing, and energy gating.
+Audio I/O, windowing, energy gating, and silence stripping.
 
-All audio is loaded as mono float32 at SAMPLE_RATE.  Windows are produced
-with a configurable duration and hop, then passed through an energy gate
-that discards segments more than ENERGY_GATE_DB below the loudest window.
+All audio is loaded as mono float32 at SAMPLE_RATE.  Leading/trailing
+silence is optionally trimmed before windowing (strip_silence).  Windows
+are produced with a configurable duration and hop, then passed through an
+energy gate that discards segments more than ENERGY_GATE_DB below the
+loudest window.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ SAMPLE_RATE: int   = 22050   # Hz — works for both librosa and CREPE (which re
 WINDOW_SEC: float  = 10.0    # window duration
 HOP_SEC: float     = 5.0     # 50% overlap
 ENERGY_GATE_DB: float = -40.0  # discard windows this many dB below the peak window
+SILENCE_STRIP_DB: float = 60.0  # top_db passed to librosa.effects.trim
 
 
 # ── data container ────────────────────────────────────────────────────────────
@@ -50,6 +53,30 @@ def load_audio(path: str, sr: int = SAMPLE_RATE) -> tuple[np.ndarray, int]:
     """
     y, _ = librosa.load(path, sr=sr, mono=True, dtype=np.float32)
     return y, sr
+
+
+def strip_silence(
+    audio: np.ndarray,
+    sr: int,
+    top_db: float = SILENCE_STRIP_DB,
+) -> tuple[np.ndarray, float, float]:
+    """
+    Trim leading and trailing silence from *audio*.
+
+    Uses librosa.effects.trim with the given *top_db* threshold: frames more
+    than *top_db* dB below the peak frame are considered silent.
+
+    Returns
+    -------
+    (trimmed_audio, leading_sec, trailing_sec)
+        trimmed_audio : silence-trimmed 1-D float32 ndarray
+        leading_sec   : seconds of silence removed from the start
+        trailing_sec  : seconds of silence removed from the end
+    """
+    trimmed, (start, end) = librosa.effects.trim(audio, top_db=top_db)
+    leading_sec  = start / sr
+    trailing_sec = (len(audio) - end) / sr
+    return trimmed, leading_sec, trailing_sec
 
 
 def slice_windows(
