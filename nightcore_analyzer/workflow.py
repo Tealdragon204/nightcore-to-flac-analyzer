@@ -121,52 +121,66 @@ def _lr_listening_test(hqnc: Path, ncog: Path) -> Optional[float]:
     """
     Interactive L/R stereo listening comparison.
 
-    Mixes HQNC (left channel, speed-adjusted on the fly) and NCOG (right
-    channel, unmodified) into a temporary WAV and plays it via sox ``play``.
-    The user can nudge the applied ratio in ±0.001 or ±0.0001 steps until
-    they are satisfied.
+    Builds the stereo mix in three explicit steps so that file paths
+    containing spaces are handled correctly (no shell pipe substitution):
 
-    Returns the accepted ratio (1.0 = no change needed) or None if the user
-    cancels.  A returned ratio ≠ 1.0 means an additional speed correction of
-    that factor is needed on top of the current HQNC.
+      1. sox HQNC  tmp_l.wav  speed R  remix 1 0  →  HQNC on left, silence on right
+      2. sox NCOG  tmp_r.wav  remix 0 1            →  silence on left, NCOG on right
+      3. sox -M tmp_l.wav tmp_r.wav tmp_out.wav    →  merge into true L/R stereo
 
-    Note: sox ``-M '|cmd'`` process substitution splits on whitespace; file
-    paths containing spaces will break the inner sox command.
+    Then plays via ``play`` and prompts the user to nudge the ratio or accept.
+
+    Returns the accepted ratio (1.0 = no correction needed) or None if
+    cancelled.  A ratio ≠ 1.0 means an additional speed correction of that
+    factor is needed on top of the current HQNC.
     """
     import tempfile
     import time
 
-    if not shutil.which("play"):
-        print(
-            "\n  WARNING: 'play' (sox) not found — L/R listening test unavailable.\n"
-            "  Install with:  sudo apt install sox   (Debian/Ubuntu)\n"
-            "                 brew install sox        (macOS)\n"
-        )
-        return None
+    for tool in ("sox", "play"):
+        if not shutil.which(tool):
+            print(
+                f"\n  WARNING: '{tool}' not found — L/R listening test unavailable.\n"
+                f"  Install with:  sudo apt install sox   (Debian/Ubuntu)\n"
+                f"                 brew install sox        (macOS)\n"
+            )
+            return None
 
     ratio = 1.0
     step  = _LR_NUDGE_COARSE
 
     while True:
-        ts  = int(time.time())
-        tmp = Path(tempfile.gettempdir()) / f"lr_compare_{ts}.wav"
+        ts      = int(time.time())
+        tmpdir  = Path(tempfile.gettempdir())
+        tmp_l   = tmpdir / f"lr_left_{ts}.wav"
+        tmp_r   = tmpdir / f"lr_right_{ts}.wav"
+        tmp_out = tmpdir / f"lr_compare_{ts}.wav"
         try:
-            print(f"\n  Mixing L/R (HQNC × {ratio:.6f} → left,  NCOG → right)…")
-            left  = f"|sox {str(hqnc)} -p speed {ratio:.6f} remix 1 0"
-            right = f"|sox {str(ncog)} -p remix 0 1"
+            print(f"\n  Building L/R mix (HQNC × {ratio:.6f} → left, NCOG → right)…")
             subprocess.run(
-                ["sox", "-M", left, right, str(tmp)], check=True
+                ["sox", str(hqnc), str(tmp_l),
+                 "speed", f"{ratio:.6f}", "remix", "1", "0"],
+                check=True,
+            )
+            subprocess.run(
+                ["sox", str(ncog), str(tmp_r), "remix", "0", "1"],
+                check=True,
+            )
+            subprocess.run(
+                ["sox", "-M", str(tmp_l), str(tmp_r), str(tmp_out)],
+                check=True,
             )
             print("  Playing — Ctrl+C to stop early.")
-            subprocess.run(["play", str(tmp)], check=True)
+            subprocess.run(["play", str(tmp_out)], check=True)
         except KeyboardInterrupt:
-            print()  # newline after ^C
+            print()
         except subprocess.CalledProcessError as exc:
             print(f"\n  L/R playback failed: {exc}")
             return None
         finally:
-            if tmp.exists():
-                tmp.unlink()
+            for t in (tmp_l, tmp_r, tmp_out):
+                if t.exists():
+                    t.unlink()
 
         ans = _prompt_choice("  Did they sound aligned?", options="ynq", default="n")
         if ans == "q":
@@ -174,8 +188,7 @@ def _lr_listening_test(hqnc: Path, ncog: Path) -> Optional[float]:
         if ans == "y":
             return ratio
 
-        # Direction / step-size prompt
-        print(f"  Current ratio: {ratio:.6f}   Current step: {step}")
+        print(f"  Current ratio: {ratio:.6f}   Step: {step}")
         direction = _prompt_choice(
             "  [u]p / [d]own / [c]oarse step 0.001 / [f]ine step 0.0001 / [q]uit",
             options="udcfq",
@@ -491,6 +504,7 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
         _run_sox(hq, hqnc, current_speed)
 
     # Step 2 — verification loop (retry with corrected factor until OK or user bails)
+    offer_lr_final = False  # set when xcorr is poor or length ratio warns; used in Step 4
     if hqnc and hqnc.is_file():
         attempt = 0
         while True:
@@ -513,68 +527,15 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
             result2.xcorr_quality = xcorr_q
 
             tempo_ok, offer_lr = _print_verification_result(result2, hqnc, ncog)
+            offer_lr_final = offer_lr  # carry flag to Step 4 (after spectral)
 
             if tempo_ok:
-                if offer_lr:
-                    print()
-                    print(
-                        "  Note: xcorr quality is low or file lengths differ —"
-                        " an L/R listening test can give a final human check."
-                    )
-                    ans_lr = _prompt_choice(
-                        "  Run L/R listening comparison to confirm alignment?",
-                        options="yn",
-                        default="y",
-                    )
-                    if ans_lr == "y":
-                        accepted = _lr_listening_test(hqnc, ncog)
-                        if accepted is not None and abs(accepted - 1.0) > 1e-9:
-                            corrected_speed = current_speed * accepted
-                            upd_version += 1
-                            next_hqnc = _make_hqnc_path_v(hq, upd_version)
-                            print(
-                                f"\n  Applying L/R-detected correction:"
-                                f" {current_speed:.6f} × {accepted:.6f}"
-                                f" = {corrected_speed:.6f}×"
-                            )
-                            _run_sox(hq, next_hqnc, corrected_speed)
-                            hqnc = next_hqnc
-                            current_speed = corrected_speed
-                break  # good enough (with or without L/R fine-tuning)
-
-            # ── Offer L/R test when algorithm is uncertain ────────────────────
-            if offer_lr:
-                print()
-                print(
-                    "  xcorr quality is low or file lengths differ."
-                    "  An L/R listening comparison can help identify the correct ratio."
-                )
-                ans_lr = _prompt_choice(
-                    "  Run L/R listening comparison before algorithm retry?",
-                    options="yn",
-                    default="y",
-                )
-                if ans_lr == "y":
-                    accepted = _lr_listening_test(hqnc, ncog)
-                    if accepted is not None:
-                        if abs(accepted - 1.0) < 1e-9:
-                            print("  L/R test: confirmed aligned at current ratio.")
-                            break  # user's ear says it's fine
-                        corrected_speed = current_speed * accepted
-                        upd_version += 1
-                        next_hqnc = _make_hqnc_path_v(hq, upd_version)
-                        print(
-                            f"\n  Applying L/R ratio: {current_speed:.6f}"
-                            f" × {accepted:.6f} = {corrected_speed:.6f}×"
-                        )
-                        _run_sox(hq, next_hqnc, corrected_speed)
-                        hqnc = next_hqnc
-                        current_speed = corrected_speed
-                        continue  # re-run verification with corrected HQNC
+                break  # good enough — proceed to spectral
 
             # ── Offer corrected re-run (algorithm-driven) ─────────────────────
             # Prefer IBI ratio for the corrected factor (more precise than BPM)
-            residual_ratio = result2.ibi_ratio if result2.ibi_ratio is not None else result2.tempo_ratio
+            residual_ratio = (result2.ibi_ratio if result2.ibi_ratio is not None
+                              else result2.tempo_ratio)
             corrected_speed = current_speed * residual_ratio
             upd_version += 1
             next_hqnc = _make_hqnc_path_v(hq, upd_version)
@@ -584,8 +545,8 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
             print(f"  Speed is still off by {pct_off:+.2f}%.")
             estimator = "IBI" if result2.ibi_ratio is not None else "BPM"
             print(
-                f"  Corrected factor ({estimator}): {current_speed:.6f} × {residual_ratio:.6f}"
-                f" = {corrected_speed:.6f}×"
+                f"  Corrected factor ({estimator}): {current_speed:.6f}"
+                f" × {residual_ratio:.6f} = {corrected_speed:.6f}×"
             )
             print(f"  Would create: {next_hqnc.name}")
             ans_retry = _prompt_choice(
@@ -619,6 +580,45 @@ def run_full_suite(hq: Path, ncog: Path) -> None:
                 label_a=f"HQ ({hq.name})",
                 label_b=f"NCOG ({ncog.name})",
             )
+
+    # Step 4 — L/R listening comparison (human ear check, after spectral)
+    if offer_lr_final and hqnc and hqnc.is_file():
+        print()
+        _hr("═")
+        print("  STEP 4 — L/R LISTENING COMPARISON")
+        _hr("═")
+        print(
+            "  Xcorr quality was low or file lengths differed during verification.\n"
+            "  Use this step to confirm alignment by ear after spectral analysis."
+        )
+        ans_lr = _prompt_choice(
+            "  Run L/R listening comparison?", options="yn", default="y"
+        )
+        if ans_lr == "y":
+            accepted = _lr_listening_test(hqnc, ncog)
+            if accepted is not None and abs(accepted - 1.0) > 1e-9:
+                corrected_speed = current_speed * accepted
+                upd_version += 1
+                next_hqnc = _make_hqnc_path_v(hq, upd_version)
+                print(
+                    f"\n  Applying L/R correction: {current_speed:.6f}"
+                    f" × {accepted:.6f} = {corrected_speed:.6f}×"
+                )
+                _run_sox(hq, next_hqnc, corrected_speed)
+                hqnc = next_hqnc
+                current_speed = corrected_speed
+                print()
+                ans_re = _prompt_choice(
+                    "  Re-run spectral analysis with the corrected HQNC?",
+                    options="yn",
+                    default="y",
+                )
+                if ans_re == "y":
+                    run_spectral_analysis(
+                        path_a=hqnc, path_b=ncog,
+                        label_a=f"HQNC ({hqnc.name})",
+                        label_b=f"NCOG ({ncog.name})",
+                    )
 
 
 # ── mode: speed comparison ────────────────────────────────────────────────────
