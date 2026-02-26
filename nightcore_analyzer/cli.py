@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from . import pipeline
-from .io import WINDOW_SEC, HOP_SEC, ENERGY_GATE_DB
+from .io import WINDOW_SEC, HOP_SEC, ENERGY_GATE_DB, SILENCE_STRIP_DB
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -80,6 +80,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--silence-strip-db",
+        type=float,
+        default=SILENCE_STRIP_DB,
+        metavar="DB",
+        help=(
+            "Top-dB threshold for trimming leading/trailing silence before "
+            "analysis.  A frame is silent if its power is more than DB dB "
+            "below the peak frame (default %(default)s).  "
+            "Ignored when --no-silence-strip is set."
+        ),
+    )
+    p.add_argument(
+        "--no-silence-strip",
+        action="store_true",
+        help="Disable leading/trailing silence stripping entirely.",
+    )
+    p.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="Suppress progress output (errors still go to stderr)",
@@ -109,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     log = None if args.quiet else print
+    silence_strip_db = None if args.no_silence_strip else args.silence_strip_db
 
     # ── run pipeline ──────────────────────────────────────────────────────────
     try:
@@ -118,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             window_sec=args.window,
             hop_sec=args.hop,
             energy_gate_db=args.energy_gate,
+            silence_strip_db=silence_strip_db,
             log=log,
         )
     except Exception as exc:
