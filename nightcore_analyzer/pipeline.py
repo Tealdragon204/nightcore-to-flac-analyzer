@@ -28,7 +28,8 @@ def run(
     hop_sec: float = HOP_SEC,
     energy_gate_db: float = ENERGY_GATE_DB,
     silence_strip_db: Optional[float] = SILENCE_STRIP_DB,
-    auto_align: bool = True,
+    src_trim_sec: float = 0.0,
+    auto_align: bool = False,
     log: Optional[Callable[[str], None]] = print,
 ) -> AnalysisResult:
     """
@@ -53,6 +54,16 @@ def run(
         audio file before windowing.  Uses librosa.effects.trim: a frame
         is silent when its power is more than *silence_strip_db* dB below
         the peak frame (default 60 dB).  Pass ``None`` to disable.
+    src_trim_sec : float
+        Manually trim this many seconds from the start of the source file
+        before analysis.  Use when the source has a musical intro that the
+        nightcore lacks (e.g. 2.5 to skip a 2.5 s intro).  Takes priority
+        over *auto_align* when non-zero.
+    auto_align : bool
+        Attempt automatic intro-offset detection via RMS envelope cross-
+        correlation.  Unreliable on repetitive-structure music (dance,
+        euro-pop).  Disabled by default.  Prefer *src_trim_sec* for
+        manual, deterministic control.
     log : callable or None
         Called with progress messages.  Pass ``None`` to suppress output.
 
@@ -89,9 +100,14 @@ def run(
             f"  →  {len(src_audio)/sr:.1f} s"
         )
 
-    # ── 1c. content-alignment: detect and skip musical intro in src ───────────
+    # ── 1c. source trim: manual override takes priority over auto-align ──────────
     intro_offset_sec: Optional[float] = None
-    if auto_align:
+    if src_trim_sec > 0.0:
+        trim_samples = int(src_trim_sec * sr)
+        src_audio = src_audio[trim_samples:]
+        intro_offset_sec = src_trim_sec
+        _log(f"Manual source trim: skipping {src_trim_sec:.2f}s from source start")
+    elif auto_align:
         _log("Detecting intro offset (RMS envelope alignment)…")
         raw_offset, align_speed = find_content_offset(src_audio, nc_audio, sr)
         if raw_offset >= ALIGN_MIN_OFFSET:
