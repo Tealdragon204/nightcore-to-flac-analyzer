@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from . import loudness as lda
 from . import pipeline
 from . import spectral as spec
 from . import xcorr
@@ -423,6 +424,139 @@ def run_spectral_analysis(
     )
 
 
+# ── loudness adjustment ───────────────────────────────────────────────────────
+
+def run_loudness_adjustment(src: Path) -> None:
+    """
+    Interactive loudness-adjustment loop for *src*.
+
+    Detects whether the file has peaks at or above 0 dBFS (digital clipping
+    that can cause crackling) and offers two correction methods:
+
+      [l]  True Peak Limiter  — ffmpeg alimiter (surgical; only touches peaks
+                                above the ceiling, everything else unchanged)
+      [g]  Gain Reduction     — sox/ffmpeg uniform gain shift (brute force;
+                                lowers the whole signal by N dB)
+
+    Each corrected file is written as ADJ1, ADJ2, … next to the source.
+    The user is asked before every pass.
+    """
+    print()
+    _hr("═")
+    print("  LOUDNESS ADJUSTMENT")
+    _hr("═")
+    print(f"  File: {src.name}")
+    print()
+    print("  Method options:")
+    print("    [l]  True Peak Limiter  (recommended — surgical, preserves dynamic range)")
+    print("    [g]  Gain Reduction     (brute force — shifts entire signal down by N dB)")
+    print()
+
+    current = src
+    adj_version = 0
+
+    while True:
+        # ── detect peak on current file ───────────────────────────────────────
+        print(f"  Scanning: {current.name} …")
+        peak_db, is_clipping = lda.detect_peak(current)
+
+        if peak_db == float("-inf"):
+            print("  Peak: -inf dBFS  (file appears silent)")
+        else:
+            clip_tag = "  !! CLIPPING" if is_clipping else "  OK"
+            print(f"  Peak: {peak_db:+.2f} dBFS{clip_tag}")
+
+        if not is_clipping:
+            print()
+            if peak_db == float("-inf"):
+                print("  File is silent — nothing to adjust.")
+                break
+            print("  No clipping detected (peak is below 0 dBFS).")
+            ans_cont = _prompt_choice(
+                "  Continue anyway (apply adjustment even though not needed)?",
+                options="yne",
+                default="n",
+            )
+            if ans_cont != "y":
+                print("  No adjustment applied.")
+                break
+
+        # ── ask which method ──────────────────────────────────────────────────
+        print()
+        method = _prompt_choice(
+            "  Adjustment method?  [l] True Peak Limiter  [g] Gain Reduction",
+            options="lge",
+        )
+
+        adj_version += 1
+        dst = lda.make_adj_path(src, adj_version)
+
+        if method == "l":
+            # True peak limiter — ask for ceiling
+            print()
+            raw_limit = input(
+                "  Limiter ceiling in dBFS (default -0.1, press Enter to accept): "
+            ).strip()
+            try:
+                limit_db = float(raw_limit) if raw_limit else -0.1
+            except ValueError:
+                print("  Invalid value — using default -0.1 dBFS.")
+                limit_db = -0.1
+            limit_db = min(limit_db, 0.0)  # never allow above 0 dBFS
+            print(f"  Ceiling : {limit_db:.1f} dBFS")
+            print(f"  Output  : {dst.name}")
+            lda.apply_true_peak_limiter(current, dst, limit_db=limit_db)
+
+        else:  # method == "g"
+            # Gain reduction — ask for dB amount
+            print()
+            raw_gain = input(
+                "  Gain reduction in dB (default -1.0, press Enter to accept): "
+            ).strip()
+            try:
+                gain_db = float(raw_gain) if raw_gain else -1.0
+            except ValueError:
+                print("  Invalid value — using default -1.0 dB.")
+                gain_db = -1.0
+            gain_db = min(gain_db, 0.0)  # enforce reduction, not boost
+            print(f"  Gain    : {gain_db:.1f} dB")
+            print(f"  Output  : {dst.name}")
+            lda.apply_gain_reduction(current, dst, gain_db=gain_db)
+
+        # ── verify result ─────────────────────────────────────────────────────
+        print()
+        print(f"  Verifying {dst.name} …")
+        new_peak_db, new_clipping = lda.detect_peak(dst)
+        if new_peak_db == float("-inf"):
+            print("  Peak (after): -inf dBFS")
+        else:
+            clip_tag = "  !! still clipping" if new_clipping else "  OK"
+            print(f"  Peak (after): {new_peak_db:+.2f} dBFS{clip_tag}")
+
+        if not new_clipping:
+            print()
+            print(f"  Clipping resolved.  Final file: {dst.name}")
+        else:
+            print()
+            print("  File is still clipping after adjustment.")
+
+        # ── ask for another pass ──────────────────────────────────────────────
+        print()
+        ans_again = _prompt_choice(
+            f"  Run another adjustment pass (would create {lda.make_adj_path(src, adj_version + 1).name})?",
+            options="yne",
+            default="n",
+        )
+        if ans_again != "y":
+            break
+        current = dst  # next pass operates on the just-created ADJ file
+
+    print()
+    _hr("─")
+    print("  Loudness adjustment complete.")
+    _hr("─")
+
+
 # ── mode: full suite ──────────────────────────────────────────────────────────
 
 def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
@@ -551,6 +685,18 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
                 label_b=f"NCOG ({ncog.name})",
             )
 
+    # Step 4 — optional loudness adjustment (clipping / crackling prevention)
+    print()
+    ans3 = _prompt_choice(
+        "  Run loudness adjustment? (detects 0 dBFS clipping, offers limiter or gain fix)",
+        options="yn",
+    )
+    if ans3 == "y":
+        # Prefer the HQNC (the file the user will actually use); fall back to HQ source
+        adj_target = hqnc if (hqnc and hqnc.is_file()) else hq
+        print(f"\n  Target: {adj_target.name}")
+        run_loudness_adjustment(adj_target)
+
 
 # ── mode: speed comparison ────────────────────────────────────────────────────
 
@@ -639,13 +785,20 @@ def main() -> None:
     print("  [f]  Full suite  (speed comparison → create HQNC → verification → spectral)")
     print("  [s]  Speed comparison  (+ optional HQNC creation + optional spectral)")
     print("  [a]  Spectral analysis  (standalone two-file comparison)")
+    print("  [l]  Loudness adjustment  (clipping detection + true peak limiter / gain)")
     print("  [e]  Exit")
     print()
 
-    mode = _prompt_choice("Choose mode", options="fsae")
+    mode = _prompt_choice("Choose mode", options="fsale")
 
     if mode == "a":
         run_spectral_analysis()
+        return
+
+    if mode == "l":
+        print()
+        target = _prompt_file("Audio file to adjust")
+        run_loudness_adjustment(target)
         return
 
     # Modes f and s need both files — NCOG first, then HQ
