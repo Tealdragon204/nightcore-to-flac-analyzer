@@ -198,6 +198,19 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
             f"  HQ {result.src_median_bpm:.1f} BPM"
         )
 
+    # Durations + duration-derived ratio
+    if result.nc_duration and result.src_duration:
+        dur_ratio = result.src_duration / result.nc_duration
+        print(
+            f"  Durations     : NCOG {result.nc_duration:.3f} s"
+            f"  |  HQ {result.src_duration:.3f} s"
+            f"  (after silence trim)"
+        )
+        print(
+            f"  Duration ratio: {dur_ratio:.6f}×  (HQ÷NCOG)"
+            f"  |  inverse: {1.0/dur_ratio:.6f}×"
+        )
+
     # Pitch vs tempo note
     pt_diff = abs(pr - tr) / tr if tr > 0 else 0
     if pt_diff > _PITCH_TEMPO_TOLERANCE:
@@ -301,6 +314,16 @@ def _print_verification_result(
 
     len_ratio_warn = False
     if result.nc_duration and result.src_duration:
+        dur_ratio = result.src_duration / result.nc_duration
+        print(
+            f"  Durations  : NCOG {result.nc_duration:.3f} s"
+            f"  |  HQNC {result.src_duration:.3f} s"
+            f"  (after silence trim)"
+        )
+        print(
+            f"  Dur ratio  : {dur_ratio:.6f}×  (HQNC÷NCOG)"
+            f"  |  inverse: {1.0/dur_ratio:.6f}×"
+        )
         len_ratio = result.nc_duration / result.src_duration
         if abs(len_ratio - 1.0) > _LEN_RATIO_WARN:
             diff_s = abs(result.nc_duration - result.src_duration)
