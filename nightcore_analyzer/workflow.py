@@ -117,105 +117,19 @@ def _run_sox(src: Path, dst: Path, speed: float) -> None:
     print(f"  Created: {dst}")
 
 
-def _lr_listening_test(hqnc: Path, ncog: Path) -> Optional[float]:
-    """
-    Interactive L/R stereo listening comparison.
+_LOSSLESS_EXTENSIONS = {"flac", "wav", "aiff", "aif", "pcm"}
 
-    Builds the stereo mix in three explicit steps so that file paths
-    containing spaces are handled correctly (no shell pipe substitution):
 
-      1. sox HQNC  tmp_l.wav  speed R  remix 1 0  →  HQNC on left, silence on right
-      2. sox NCOG  tmp_r.wav  remix 0 1            →  silence on left, NCOG on right
-      3. sox -M tmp_l.wav tmp_r.wav tmp_out.wav    →  merge into true L/R stereo
-
-    Then plays via ``play`` and prompts the user to nudge the ratio or accept.
-
-    Returns the accepted ratio (1.0 = no correction needed) or None if
-    cancelled.  A ratio ≠ 1.0 means an additional speed correction of that
-    factor is needed on top of the current HQNC.
-    """
-    import tempfile
-    import time
-
-    for tool in ("sox", "play"):
-        if not shutil.which(tool):
-            print(
-                f"\n  WARNING: '{tool}' not found — L/R listening test unavailable.\n"
-                f"  Install with:  sudo apt install sox   (Debian/Ubuntu)\n"
-                f"                 brew install sox        (macOS)\n"
-            )
-            return None
-
-    ratio = 1.0
-    step  = _LR_NUDGE_COARSE
-
-    # Detect NCOG's sample rate once; force both temp WAVs to this rate so
-    # sox -M can merge them (it requires identical sample rates on all inputs).
-    # The sox `speed` effect also shifts the output sample-rate proportionally,
-    # so we must resample explicitly.  soxi ships with sox; fall back to 44100.
-    _sr_proc = subprocess.run(
-        ["soxi", "-r", str(ncog)], capture_output=True, text=True
-    )
-    _sr_out = _sr_proc.stdout.strip() if _sr_proc.returncode == 0 else "44100"
-
-    while True:
-        ts      = int(time.time())
-        tmpdir  = Path(tempfile.gettempdir())
-        tmp_l   = tmpdir / f"lr_left_{ts}.wav"
-        tmp_r   = tmpdir / f"lr_right_{ts}.wav"
-        tmp_out = tmpdir / f"lr_compare_{ts}.wav"
-        try:
-            print(f"\n  Building L/R mix (HQNC × {ratio:.6f} → left, NCOG → right)…")
-            subprocess.run(
-                ["sox", str(hqnc), "-r", _sr_out, str(tmp_l),
-                 "speed", f"{ratio:.6f}", "remix", "1"],
-                check=True,
-            )
-            subprocess.run(
-                ["sox", str(ncog), "-r", _sr_out, str(tmp_r),
-                 "remix", "1"],
-                check=True,
-            )
-            subprocess.run(
-                ["sox", "-G", "-M", str(tmp_l), str(tmp_r), str(tmp_out)],
-                check=True,
-            )
-            print("  Playing — Ctrl+C to stop early.")
-            subprocess.run(["play", str(tmp_out)], check=True)
-        except KeyboardInterrupt:
-            print()
-        except subprocess.CalledProcessError as exc:
-            print(f"\n  L/R playback failed: {exc}")
-            return None
-        finally:
-            for t in (tmp_l, tmp_r, tmp_out):
-                if t.exists():
-                    t.unlink()
-
-        ans = _prompt_choice("  Did they sound aligned?", options="ynq", default="n")
-        if ans == "q":
-            return None
-        if ans == "y":
-            return ratio
-
-        print(f"  Current ratio: {ratio:.6f}   Step: {step}")
-        direction = _prompt_choice(
-            "  [u]p / [d]own / [c]oarse step 0.001 / [f]ine step 0.0001 / [q]uit",
-            options="udcfq",
-            default="u",
+def _lossy_source_note(hq: Path) -> Optional[str]:
+    """Return a note string if the HQ source is a lossy format, or None if lossless."""
+    ext = hq.suffix.lstrip(".").lower()
+    if ext not in _LOSSLESS_EXTENSIONS:
+        return (
+            f"  Note: HQ source is {ext.upper()} (lossy format). The HQNC will also\n"
+            f"  be created as {ext.upper()} — upcoding a lossy source to FLAC adds no\n"
+            f"  quality, so lossy-to-lossy is the correct choice here."
         )
-        if direction == "q":
-            return None
-        if direction == "c":
-            step = _LR_NUDGE_COARSE
-            print(f"  Step set to {_LR_NUDGE_COARSE}")
-            continue
-        if direction == "f":
-            step = _LR_NUDGE_FINE
-            print(f"  Step set to {_LR_NUDGE_FINE}")
-            continue
-        ratio += step if direction == "u" else -step
-        print(f"  New ratio: {ratio:.6f}")
+    return None
 
 
 # ── pipeline wrapper / result display ─────────────────────────────────────────
@@ -224,8 +138,6 @@ _NEAR_UNITY = 0.02   # |ratio − 1| below this → "essentially the same"
 _PITCH_TEMPO_TOLERANCE = 0.02  # extra pitch shift threshold beyond tempo ratio
 _XCORR_QUALITY_GATE = 0.30   # discard xcorr ratio if quality is below this
 _LEN_RATIO_WARN     = 0.005  # ⚠️ if |len_ratio − 1| > 0.5 %
-_LR_NUDGE_COARSE    = 0.001  # coarse nudge step for L/R listening test
-_LR_NUDGE_FINE      = 0.0001 # fine nudge step for L/R listening test
 
 
 def _run_pipeline(
@@ -286,6 +198,19 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
             f"  HQ {result.src_median_bpm:.1f} BPM"
         )
 
+    # Durations + duration-derived ratio
+    if result.nc_duration and result.src_duration:
+        dur_ratio = result.src_duration / result.nc_duration
+        print(
+            f"  Durations     : NCOG {result.nc_duration:.3f} s"
+            f"  |  HQ {result.src_duration:.3f} s"
+            f"  (after silence trim)"
+        )
+        print(
+            f"  Duration ratio: {dur_ratio:.6f}×  (HQ÷NCOG)"
+            f"  |  inverse: {1.0/dur_ratio:.6f}×"
+        )
+
     # Pitch vs tempo note
     pt_diff = abs(pr - tr) / tr if tr > 0 else 0
     if pt_diff > _PITCH_TEMPO_TOLERANCE:
@@ -336,6 +261,11 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
         print("  Recommended sox command:")
         print(f"    sox '{hq}' '{hqnc_path}' speed {tr:.6f}")
 
+    note = _lossy_source_note(hq)
+    if note:
+        print()
+        print(note)
+
 
 def _print_verification_result(
     result: "pipeline.AnalysisResult",
@@ -384,6 +314,16 @@ def _print_verification_result(
 
     len_ratio_warn = False
     if result.nc_duration and result.src_duration:
+        dur_ratio = result.src_duration / result.nc_duration
+        print(
+            f"  Durations  : NCOG {result.nc_duration:.3f} s"
+            f"  |  HQNC {result.src_duration:.3f} s"
+            f"  (after silence trim)"
+        )
+        print(
+            f"  Dur ratio  : {dur_ratio:.6f}×  (HQNC÷NCOG)"
+            f"  |  inverse: {1.0/dur_ratio:.6f}×"
+        )
         len_ratio = result.nc_duration / result.src_duration
         if abs(len_ratio - 1.0) > _LEN_RATIO_WARN:
             diff_s = abs(result.nc_duration - result.src_duration)
@@ -435,7 +375,7 @@ def _print_verification_result(
     print()
     _print_format_quality(hqnc, ncog)
 
-    return tempo_ok, (xcorr_poor or len_ratio_warn)
+    return tempo_ok
 
 
 def _print_format_quality(hqnc: Path, ncog: Path) -> None:
@@ -444,11 +384,10 @@ def _print_format_quality(hqnc: Path, ncog: Path) -> None:
     lossy-transcode detection via effective bandwidth) is done by the spectral
     analysis step; this is just a quick header note.
     """
-    lossless  = {"flac", "wav", "aiff", "aif", "pcm"}
     ext_hqnc  = hqnc.suffix.lstrip(".").lower()
     ext_ncog  = ncog.suffix.lstrip(".").lower()
-    note_hqnc = "lossless container" if ext_hqnc in lossless else "lossy"
-    note_ncog = "lossless container" if ext_ncog in lossless else "lossy"
+    note_hqnc = "lossless container" if ext_hqnc in _LOSSLESS_EXTENSIONS else "lossy"
+    note_ncog = "lossless container" if ext_ncog in _LOSSLESS_EXTENSIONS else "lossy"
     print(f"  Format: HQNC = {ext_hqnc.upper()} ({note_hqnc})  |  NCOG = {ext_ncog.upper()} ({note_ncog})")
     print("  Run spectral analysis for a full quality assessment (including transcode detection).")
 
@@ -537,7 +476,6 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
         _run_sox(hq, hqnc, current_speed)
 
     # Step 2 — verification loop (retry with corrected factor until OK or user bails)
-    offer_lr_final = False  # set when xcorr is poor or length ratio warns; used in Step 4
     if hqnc and hqnc.is_file():
         attempt = 0
         while True:
@@ -559,8 +497,7 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
             result2.xcorr_ratio   = xcorr_r
             result2.xcorr_quality = xcorr_q
 
-            tempo_ok, offer_lr = _print_verification_result(result2, hqnc, ncog)
-            offer_lr_final = offer_lr  # carry flag to Step 4 (after spectral)
+            tempo_ok = _print_verification_result(result2, hqnc, ncog)
 
             if tempo_ok:
                 break  # good enough — proceed to spectral
@@ -613,45 +550,6 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
                 label_a=f"HQ ({hq.name})",
                 label_b=f"NCOG ({ncog.name})",
             )
-
-    # Step 4 — L/R listening comparison (human ear check, after spectral)
-    if offer_lr_final and hqnc and hqnc.is_file():
-        print()
-        _hr("═")
-        print("  STEP 4 — L/R LISTENING COMPARISON")
-        _hr("═")
-        print(
-            "  Xcorr quality was low or file lengths differed during verification.\n"
-            "  Use this step to confirm alignment by ear after spectral analysis."
-        )
-        ans_lr = _prompt_choice(
-            "  Run L/R listening comparison?", options="yn", default="y"
-        )
-        if ans_lr == "y":
-            accepted = _lr_listening_test(hqnc, ncog)
-            if accepted is not None and abs(accepted - 1.0) > 1e-9:
-                corrected_speed = current_speed * accepted
-                upd_version += 1
-                next_hqnc = _make_hqnc_path_v(hq, upd_version)
-                print(
-                    f"\n  Applying L/R correction: {current_speed:.6f}"
-                    f" × {accepted:.6f} = {corrected_speed:.6f}×"
-                )
-                _run_sox(hq, next_hqnc, corrected_speed)
-                hqnc = next_hqnc
-                current_speed = corrected_speed
-                print()
-                ans_re = _prompt_choice(
-                    "  Re-run spectral analysis with the corrected HQNC?",
-                    options="yn",
-                    default="y",
-                )
-                if ans_re == "y":
-                    run_spectral_analysis(
-                        path_a=hqnc, path_b=ncog,
-                        label_a=f"HQNC ({hqnc.name})",
-                        label_b=f"NCOG ({ncog.name})",
-                    )
 
 
 # ── mode: speed comparison ────────────────────────────────────────────────────
