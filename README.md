@@ -296,6 +296,25 @@ set -gx LD_LIBRARY_PATH /usr/lib:$LD_LIBRARY_PATH
 python verify_cuda.py
 ```
 
+**If the above still fails in fish — clear `LD_PRELOAD` first:**
+
+Some conda environments or shell tools set `LD_PRELOAD` to a library that
+interferes at runtime.  In fish you cannot just empty it — you must erase it
+with `set -e`:
+
+```fish
+set -e LD_PRELOAD   # erase LD_PRELOAD entirely (fish: set -e = unset)
+set -gx LD_LIBRARY_PATH /usr/lib:$LD_LIBRARY_PATH
+python verify_cuda.py
+```
+
+To avoid running this every session, add it to your fish startup file:
+
+```fish
+# ~/.config/fish/config.fish
+set -e LD_PRELOAD
+```
+
 **Verify `libcuda.so.1` is present first:**
 
 ```bash
