@@ -443,7 +443,8 @@ nightcore-to-flac-analyzer/
 
 The interactive workflow guides you through the full process end-to-end:
 comparing speeds, creating a high-quality nightcore FLAC, verifying the
-result, and running a spectral analysis to surface any remaining differences.
+result, running a spectral analysis to surface any remaining differences,
+and optionally fixing any digital clipping to prevent crackling on playback.
 
 ```bash
 python -m nightcore_analyzer.workflow [HQ_FILE] [NCOG_FILE]
@@ -460,12 +461,13 @@ Path to HQ source: '/home/user/Song.flac'
 Path to HQ source: "/home/user/Song.flac"
 ```
 
-At startup you choose one of three modes:
+At startup you choose one of four modes:
 
 ```
   [f]  Full suite  (speed comparison → create HQNC → verification → spectral)
   [s]  Speed comparison  (+ optional HQNC creation + optional spectral)
   [a]  Spectral analysis  (standalone two-file comparison)
+  [l]  Loudness adjustment  (clipping detection + true peak limiter / gain)
   [e]  Exit
 ```
 
@@ -532,7 +534,7 @@ The recommended end-to-end flow:
 
    Also prints a quality note: HQNC (lossless FLAC) vs NCOG (lossy MP3).
 
-4. **Step 3/3** — Optional spectral analysis on HQNC vs NCOG, reporting:
+4. **Step 3/4** — Optional spectral analysis on HQNC vs NCOG, reporting:
    - Brightness / low-pass filtering
    - High-frequency rolloff (treble cut — common in MP3 128k rips)
    - Dynamic range / compression
@@ -540,6 +542,9 @@ The recommended end-to-end flow:
    - Reverb tail difference
    - Duration mismatch (fade-in/out, different edits)
    - Format quality note (lossless vs lossy) with a reverse-order warning
+
+5. **Step 4/4** — Optional loudness adjustment (see Mode `[l]` below).
+   Targets the HQNC if one was created; falls back to the HQ source.
 
 ---
 
@@ -556,6 +561,45 @@ you already have HQNC and want a quick check, or just want the sox command.
 Prompts for any two audio files and runs the spectral comparison report
 standalone — no pipeline analysis involved.  Useful for comparing any two
 audio files directly.
+
+---
+
+#### Mode `[l]` — Loudness adjustment
+
+Detects whether a file has digital clipping (peak ≥ 0 dBFS) that can cause
+crackling on playback, and offers to fix it with **minimal impact on quality
+and dynamic range**.
+
+Two correction methods are offered each run:
+
+| Method | How it works | Quality impact |
+|--------|-------------|----------------|
+| **`[l]` True Peak Limiter** *(recommended)* | ffmpeg `alimiter` — only attenuates samples that exceed the ceiling; everything below is left completely unchanged | Surgical: only the clipped peaks are touched; dynamic range is fully preserved |
+| **`[g]` Gain Reduction** | sox/ffmpeg uniform level shift by N dB | Simple but lowers the entire signal — quiet passages get quieter even though they were fine |
+
+The limiter is preferred: a file that is 0.3 dBFS over does not need to be
+pulled down 0.3 dB across the board — the limiter just shaves those specific
+peaks off.
+
+**Usage flow:**
+
+1. The tool reports the peak level of the file: e.g. `Peak: +0.23 dBFS  !! CLIPPING`
+2. You choose a method (`[l]` or `[g]`) and confirm the parameters (ceiling or dB amount).
+3. The adjusted file is written as `ADJ1` next to the source:
+   ```
+   Song [Nightcore].flac  →  Song [Nightcore] ADJ1.flac
+   ```
+4. The tool re-measures the peak and reports the result.
+5. If still clipping (or you want another pass), answer `[y]` to continue:
+   ```
+   Song [Nightcore] ADJ1.flac  →  Song [Nightcore] ADJ2.flac
+   ```
+
+The standalone `[l]` mode prompts for a single file.  The same loop is also
+offered as **Step 4/4** at the end of the Full Suite, targeting the HQNC.
+
+**Requirements:** `ffmpeg` (for the limiter) and/or `sox` (for gain reduction)
+must be on `PATH`.
 
 ---
 
