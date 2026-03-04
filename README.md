@@ -32,17 +32,23 @@ Input files are dirty by design: leading/trailing silence, localised artifacts (
 
 **Windowed consensus pipeline:**
 
-1. Both files (nightcore + FLAC source) are sliced into overlapping windows internally.
-2. Each window independently produces a pitch estimate (CREPE via TensorFlow/CUDA) and a tempo estimate (librosa onset detection).
-3. Energy-gated filtering discards silent or low-confidence windows.
-4. RANSAC / median consensus over all windows produces the final ratios, naturally rejecting localised artifact windows as outliers.
+1. Both files (nightcore + FLAC source) are loaded as mono float32 at 22 050 Hz. Leading and trailing silence is trimmed automatically before any analysis or duration measurement (configurable threshold; can be disabled).
+2. Both files are sliced into overlapping fixed-length windows (default: 10 s windows, 5 s hop = 50% overlap).
+3. Each window independently produces a pitch estimate (CREPE via TensorFlow/CUDA) and a tempo estimate (librosa onset detection).
+4. Energy-gated filtering discards silent or low-energy windows whose RMS energy is more than 40 dB below the peak window.
+5. Median/bootstrap consensus over all windows produces the final ratios, rejecting localised artifact windows as outliers. 2000 bootstrap resamples generate 95% confidence intervals for both tempo and pitch.
+6. Inter-beat-interval (IBI) ratio — full-signal beat tracking at fine hop resolution (hop=64, ≈1.45 ms) produces a secondary speed ratio at ~0.01% precision, 10–30× finer than the windowed BPM ratio. This is the recommended speed factor for `sox`.
+7. Waveform cross-correlation provides an independent speed estimate with a quality score 0–1; used in verification to flag gross mismatches. Results below quality 0.30 are discarded automatically.
 
 **Output:**
-- Tempo ratio (nightcore tempo ÷ source tempo)
-- Pitch ratio (nightcore pitch ÷ source pitch)
-- Confidence intervals for both
-- Alignment classification: *pure nightcore* (co-shifted) vs. *independently pitch-shifted on top* vs. *time-stretched without pitch shift*
-- Exact `pyrubberband` parameters for reconstruction
+- Tempo ratio (nightcore ÷ source) — windowed BPM median
+- IBI ratio — beat-timestamp-based, ~0.01% precision (primary recommendation when available)
+- Pitch ratio (nightcore ÷ source)
+- 95% confidence intervals for both tempo and pitch
+- Raw file durations in seconds (ms precision) after silence trim, plus duration ratio and inverse ratio (independent of beat detection — computed directly from sample counts)
+- Alignment classification: *pure nightcore* (tempo and pitch co-shifted) | *independently pitch-shifted* (extra pitch on top of speed-up) | *time-stretched* (tempo shifted, pitch unchanged) | *ambiguous* (CIs overlap)
+- Rubber Band CLI parameters for reconstruction (`rubberband --time X --pitch Y nightcore.flac reconstructed.flac`)
+- Cross-correlation ratio + quality score (verification step only)
 
 ---
 
@@ -583,7 +589,23 @@ python -m nightcore_analyzer.cli \
     --output    results.json
 ```
 
-Run `python -m nightcore_analyzer.cli --help` for all options.
+**All available flags:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--nightcore` | `-n` | *(required)* | Nightcore audio file (FLAC, MP3, WAV, …) |
+| `--source` | `-s` | *(required)* | Source audio file (original, ideally FLAC) |
+| `--output` | `-o` | stdout | Write JSON results to this file instead of printing |
+| `--window` | — | `10.0` s | Analysis window length in seconds |
+| `--hop` | — | `5.0` s | Hop between consecutive windows; less than `--window` gives overlap |
+| `--energy-gate` | — | `-40.0` dB | Discard windows whose RMS is more than this many dB below the peak window |
+| `--silence-strip-db` | — | `60.0` dB | Top-dB threshold for librosa silence trimming; frames more than this dB below the peak are considered silent |
+| `--no-silence-strip` | — | off | Disable leading/trailing silence removal entirely |
+| `--src-trim-sec` | — | `0.0` | Manually trim this many seconds from the start of the source file (takes priority over `--auto-align`) |
+| `--auto-align` | — | off | Attempt automatic intro-offset detection via RMS envelope cross-correlation. Unreliable on repetitive or dense music; `--src-trim-sec` is preferred when the offset is known |
+| `--quiet` | `-q` | off | Suppress progress output; errors still go to stderr |
+
+Output is a JSON object containing all `AnalysisResult` fields: ratios, confidence intervals, IBI ratio, duration data, classification, and Rubber Band parameters.
 
 ---
 
