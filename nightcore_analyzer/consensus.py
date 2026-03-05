@@ -184,13 +184,16 @@ class AnalysisResult:
             f"  (from {self.n_source_tempo_windows} src / {self.n_nc_tempo_windows} nc windows)"
             + dur_note
         )
-        lines.append(
-            f"Pitch ratio     : {self.pitch_ratio:.6f}"
-            f"  95% CI [{ci_p[0]:.6f}, {ci_p[1]:.6f}]"
-            f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc samples)"
-        )
-        if self.pitch_method:
-            lines.append(f"Pitch method    : {self.pitch_method}")
+        if self.n_source_pitch_windows > 0 or self.n_nc_pitch_windows > 0:
+            lines.append(
+                f"Pitch ratio     : {self.pitch_ratio:.6f}"
+                f"  95% CI [{ci_p[0]:.6f}, {ci_p[1]:.6f}]"
+                f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc samples)"
+            )
+            if self.pitch_method:
+                lines.append(f"Pitch method    : {self.pitch_method}")
+        else:
+            lines.append("Pitch ratio     : not computed in this step")
 
         # Plain-English speed summary
         tr = self.tempo_ratio
@@ -538,20 +541,23 @@ def build_result(
     src_t = _valid(src_tempos)
     nc_t  = _valid(nc_tempos)
 
-    if len(src_p) < MIN_VALID or len(nc_p) < MIN_VALID:
-        raise ValueError(
-            f"Insufficient valid pitch windows (source: {len(src_p)}, "
-            f"nightcore: {len(nc_p)}).  Need ≥ {MIN_VALID} each.\n"
-            "  Try: reducing --window size, lowering --energy-gate, "
-            "or checking that both files contain music."
-        )
     if len(src_t) < MIN_VALID or len(nc_t) < MIN_VALID:
         raise ValueError(
             f"Insufficient valid tempo windows (source: {len(src_t)}, "
             f"nightcore: {len(nc_t)}).  Need ≥ {MIN_VALID} each."
         )
 
-    pitch_ratio, pitch_ci = _bootstrap_ratio(nc_p, src_p)
+    # Pitch is optional — degrade gracefully when skipped (e.g. compute_pitch=False)
+    if len(src_p) >= MIN_VALID and len(nc_p) >= MIN_VALID:
+        pitch_ratio, pitch_ci = _bootstrap_ratio(nc_p, src_p)
+        n_src_pitch = len(src_p)
+        n_nc_pitch  = len(nc_p)
+    else:
+        pitch_ratio = 1.0
+        pitch_ci    = (1.0, 1.0)
+        n_src_pitch = 0
+        n_nc_pitch  = 0
+
     tempo_ratio, tempo_ci = _bootstrap_ratio(nc_t, src_t)
 
     # ── duration cross-check: detect and correct half-time detection artefact ──
@@ -585,8 +591,8 @@ def build_result(
         tempo_ci=tempo_ci,
         pitch_ci=pitch_ci,
         classification=classification,
-        n_source_pitch_windows=len(src_p),
-        n_nc_pitch_windows=len(nc_p),
+        n_source_pitch_windows=n_src_pitch,
+        n_nc_pitch_windows=n_nc_pitch,
         n_source_tempo_windows=len(src_t),
         n_nc_tempo_windows=len(nc_t),
         rubberband=rubberband,

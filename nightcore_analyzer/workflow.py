@@ -146,6 +146,7 @@ def _run_pipeline(
     source: Path,
     step_label: str,
     src_trim_sec: float = 0.0,
+    compute_pitch: bool = True,
 ) -> "pipeline.AnalysisResult":
     print()
     _hr("─")
@@ -158,6 +159,7 @@ def _run_pipeline(
     result = pipeline.run(
         str(nightcore), str(source),
         src_trim_sec=src_trim_sec,
+        compute_pitch=compute_pitch,
         log=lambda m: print(f"  {m}"),
     )
     return result
@@ -175,7 +177,8 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
     print(f"  Speed factor  : {tr:.6f}×  (windowed BPM ratio)")
     if result.ibi_ratio is not None:
         print(f"  IBI ratio     : {result.ibi_ratio:.6f}×  (beat timestamps — higher precision)")
-    print(f"  Pitch ratio   : {pr:.6f}")
+    if result.n_source_pitch_windows > 0:
+        print(f"  Pitch ratio   : {pr:.6f}")
     print(f"  Classification: {result.classification}")
     if result.intro_offset_sec is not None:
         print(
@@ -189,8 +192,9 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
     if result.ibi_ci is not None:
         lo_i, hi_i = result.ibi_ci
         print(f"  IBI   95% CI  : [{lo_i:.6f}, {hi_i:.6f}]")
-    lo_p, hi_p = result.pitch_ci
-    print(f"  Pitch 95% CI  : [{lo_p:.4f}, {hi_p:.4f}]")
+    if result.n_source_pitch_windows > 0:
+        lo_p, hi_p = result.pitch_ci
+        print(f"  Pitch 95% CI  : [{lo_p:.4f}, {hi_p:.4f}]")
 
     # BPMs
     if result.nc_median_bpm and result.src_median_bpm:
@@ -212,18 +216,21 @@ def _print_speed_result(result: "pipeline.AnalysisResult", hq: Path, ncog: Path)
             f"  |  inverse: {1.0/dur_ratio:.6f}×"
         )
 
-    # Pitch vs tempo note
-    pt_diff = abs(pr - tr) / tr if tr > 0 else 0
-    if pt_diff > _PITCH_TEMPO_TOLERANCE:
-        st_extra = -12 * __import__("math").log2(pr / tr)
-        print(
-            f"\n  Note: Pitch ratio ({pr:.4f}) differs from tempo ratio ({tr:.4f}) "
-            f"by {pt_diff * 100:.1f}%.\n"
-            f"  This suggests an additional pitch shift of ~{st_extra:+.2f} semitones\n"
-            f"  was applied to NCOG on top of the speed-up."
-        )
+    # Pitch vs tempo note (only when pitch was computed)
+    if result.n_source_pitch_windows > 0:
+        pt_diff = abs(pr - tr) / tr if tr > 0 else 0
+        if pt_diff > _PITCH_TEMPO_TOLERANCE:
+            st_extra = -12 * __import__("math").log2(pr / tr)
+            print(
+                f"\n  Note: Pitch ratio ({pr:.4f}) differs from tempo ratio ({tr:.4f}) "
+                f"by {pt_diff * 100:.1f}%.\n"
+                f"  This suggests an additional pitch shift of ~{st_extra:+.2f} semitones\n"
+                f"  was applied to NCOG on top of the speed-up."
+            )
+        else:
+            print("\n  Pitch and tempo ratios agree — consistent with a pure speed-up.")
     else:
-        print("\n  Pitch and tempo ratios agree — consistent with a pure speed-up.")
+        print("\n  Pitch analysis will be run as a separate step.")
 
     # Warnings
     if result.warnings:
@@ -557,6 +564,61 @@ def run_loudness_adjustment(src: Path) -> None:
     _hr("─")
 
 
+# ── pitch analysis (standalone or suite step) ─────────────────────────────────
+
+def run_pitch_analysis(
+    src_path: Path,
+    nc_path: Path,
+    *,
+    label: str = "Pitch analysis",
+) -> None:
+    """Run chroma xcorr + optional MELODIA pitch analysis and print the result."""
+    import math as _math
+    import numpy as _np
+    from .pitch import estimate_pitch_combined
+    from .io import load_audio
+
+    print()
+    _hr("─")
+    print(f"  {label}")
+    _hr("─")
+    print(f"  Source    : {src_path.name}")
+    print(f"  Nightcore : {nc_path.name}")
+    print()
+
+    src_audio, sr = load_audio(str(src_path))
+    nc_audio,  _  = load_audio(str(nc_path), sr=sr)
+
+    src_hz, nc_hz, method = estimate_pitch_combined(
+        src_audio, nc_audio, sr, log=lambda m: print(f"  {m}"),
+    )
+
+    valid_src = [v for v in src_hz if v is not None and v > 0]
+    valid_nc  = [v for v in nc_hz  if v is not None and v > 0]
+    if not valid_src or not valid_nc:
+        print("  Pitch analysis: insufficient voiced frames — no result.")
+        return
+
+    ratio    = float(_np.median(valid_nc)) / float(_np.median(valid_src))
+    shift_st = 12.0 * _math.log2(ratio)
+
+    print()
+    _hr("═")
+    print("  PITCH ANALYSIS RESULTS")
+    _hr("═")
+    print(f"  Pitch ratio   : {ratio:.6f}  ({shift_st:+.3f} semitones)")
+    print(f"  Pitch method  : {method}")
+    print(f"  Samples used  : {len(valid_src)} src  /  {len(valid_nc)} nc")
+    if abs(shift_st) < 0.5:
+        print("\n  No significant independent pitch shift detected.")
+    else:
+        corr_st = -shift_st
+        print(
+            f"\n  Independent pitch shift detected: {shift_st:+.3f} st above speed-up.\n"
+            f"  To correct: rubberband --pitch {corr_st:+.4f}  (in addition to --time)"
+        )
+
+
 # ── mode: full suite ──────────────────────────────────────────────────────────
 
 def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
@@ -565,12 +627,13 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
     print("  FULL SUITE")
     _hr("═")
 
-    # Step 1 — speed comparison
-    print("\n  Step 1/3 — Speed comparison  (HQ vs NCOG)")
+    # Step 1 — speed comparison (pitch skipped here — runs as its own step)
+    print("\n  Step 1/5 — Speed comparison  (HQ vs NCOG)")
     result1 = _run_pipeline(
         nightcore=ncog, source=hq,
         step_label="Analysing HQ vs NCOG…",
         src_trim_sec=src_trim_sec,
+        compute_pitch=False,
     )
     _print_speed_result(result1, hq, ncog)
 
@@ -615,9 +678,9 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
         while True:
             attempt += 1
             step_label = (
-                "Step 2/3 — Verification  (HQNC vs NCOG)"
+                "Step 2/5 — Verification  (HQNC vs NCOG)"
                 if attempt == 1
-                else f"Step 2/3 — Re-verification  (attempt {attempt})"
+                else f"Step 2/5 — Re-verification  (attempt {attempt})"
             )
             print(f"\n  {step_label}")
             result2 = _run_pipeline(
@@ -665,9 +728,23 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
             hqnc = next_hqnc
             current_speed = corrected_speed
     else:
-        print("\n  Step 2/3 — Skipped (no HQNC created).")
+        print("\n  Step 2/5 — Skipped (no HQNC created).")
 
-    # Step 3 — spectral analysis
+    # Step 3 — pitch analysis
+    print()
+    _hr("═")
+    print("  Step 3/5 — Pitch analysis")
+    _hr("═")
+    ans_pitch = _prompt_choice("  Run pitch analysis?", options="yn", default="y")
+    if ans_pitch == "y":
+        pitch_src = hqnc if (hqnc is not None and hqnc.is_file()) else hq
+        run_pitch_analysis(
+            src_path=pitch_src,
+            nc_path=ncog,
+            label=f"Step 3/5 — Pitch analysis  ({pitch_src.name} vs {ncog.name})",
+        )
+
+    # Step 4 — spectral analysis
     print()
     ans2 = _prompt_choice("  Run spectral analysis?", options="yn")
     if ans2 == "y":
@@ -685,7 +762,7 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
                 label_b=f"NCOG ({ncog.name})",
             )
 
-    # Step 4 — optional loudness adjustment (clipping / crackling prevention)
+    # Step 5 — optional loudness adjustment (clipping / crackling prevention)
     print()
     ans3 = _prompt_choice(
         "  Run loudness adjustment? (detects 0 dBFS clipping, offers limiter or gain fix)",
@@ -782,14 +859,22 @@ def main() -> None:
     _hr("═")
     print("  NIGHTCORE ANALYZER — WORKFLOW")
     _hr("═")
-    print("  [f]  Full suite  (speed comparison → create HQNC → verification → spectral)")
+    print("  [f]  Full suite  (speed → create HQNC → verification → pitch → spectral → loudness)")
     print("  [s]  Speed comparison  (+ optional HQNC creation + optional spectral)")
+    print("  [p]  Pitch analysis  (standalone two-file chroma xcorr + optional MELODIA)")
     print("  [a]  Spectral analysis  (standalone two-file comparison)")
     print("  [l]  Loudness adjustment  (clipping detection + true peak limiter / gain)")
     print("  [e]  Exit")
     print()
 
-    mode = _prompt_choice("Choose mode", options="fsale")
+    mode = _prompt_choice("Choose mode", options="fspale")
+
+    if mode == "p":
+        print()
+        hq_p   = _prompt_file("Source / HQ file")
+        ncog_p = _prompt_file("Nightcore / NCOG file")
+        run_pitch_analysis(hq_p, ncog_p, label="Pitch analysis")
+        return
 
     if mode == "a":
         run_spectral_analysis()
