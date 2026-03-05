@@ -110,6 +110,22 @@ sox --version
 
 > **Note:** sox is only needed if you use the interactive workflow (`python -m nightcore_analyzer.workflow`) and choose to create an HQNC file.  The CLI and GUI analysis modes do not require it.
 
+### Optional: MELODIA pitch refinement (essentia)
+
+The pitch estimator uses CQT chromagram cross-correlation by default (librosa, no extra install required). For sub-semitone precision, install **essentia** to enable MELODIA melodic pitch extraction as an optional refinement pass:
+
+```bash
+# pip — CPU wheels available on Linux and macOS
+pip install essentia
+
+# Verify the import works:
+python -c "import essentia.standard; print('essentia OK')"
+```
+
+When essentia is installed, the pitch step automatically runs MELODIA and accepts its result if it agrees with the chroma estimate within ±1.5 semitones. The output will show `Pitch method: chroma+melodia` instead of `chroma_xcorr`.
+
+essentia is **not** required — the tool works fully without it using chroma xcorr alone.
+
 ---
 
 ## Clone the Repository

@@ -30,6 +30,7 @@ def run(
     silence_strip_db: Optional[float] = SILENCE_STRIP_DB,
     src_trim_sec: float = 0.0,
     auto_align: bool = False,
+    compute_pitch: bool = True,
     log: Optional[Callable[[str], None]] = print,
 ) -> AnalysisResult:
     """
@@ -145,11 +146,17 @@ def run(
         )
 
     # ── 4. pitch estimation (chroma xcorr + optional MELODIA) ─────────────────
-    _log("Estimating pitch (chromagram cross-correlation)…")
-    src_pitches, nc_pitches, pitch_method = estimate_pitch_combined(
-        src_audio, nc_audio, sr, log=_log,
-    )
-    _log(f"  Pitch method: {pitch_method}")
+    if compute_pitch:
+        _log("Estimating pitch (chromagram cross-correlation)…")
+        src_pitches, nc_pitches, pitch_method = estimate_pitch_combined(
+            src_audio, nc_audio, sr, log=_log,
+        )
+        _log(f"  Pitch method: {pitch_method}")
+    else:
+        _log("Skipping pitch estimation.")
+        src_pitches = []
+        nc_pitches  = []
+        pitch_method = None
 
     # ── 5. tempo estimation (librosa) ─────────────────────────────────────────
     # Detect source tempos first (default prior), then use the source median
