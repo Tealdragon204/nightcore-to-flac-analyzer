@@ -3,19 +3,20 @@
 # ============================================================
 # Install into an isolated virtualenv or conda env.
 # See README.md for full environment setup instructions.
-#
-# IMPORTANT: TensorFlow must see your NVIDIA GPU before
-# proceeding past Step 1. Run verify_cuda.py to confirm.
 # ============================================================
 
-# --- Machine Learning / GPU -------------------------------------------
-# Bundles cuDNN + CUDA runtime as Python wheels (no system CUDA install
-# required for TF itself, but the NVIDIA driver MUST be installed).
-tensorflow[and-cuda]>=2.15.0,<2.17.0
+# --- Machine Learning / GPU (no longer required) ----------------------
+# Pitch detection now uses chromagram cross-correlation (librosa) and
+# optionally MELODIA (essentia).  TensorFlow and CREPE are not needed.
+# tensorflow[and-cuda]>=2.15.0,<2.17.0
+# crepe>=0.0.16
 
-# --- Pitch Detection (CREPE) ------------------------------------------
-# CREPE uses TensorFlow internally; must be installed after TF.
-crepe>=0.0.16
+# --- Pitch Refinement (OPTIONAL) --------------------------------------
+# Essentia provides MELODIA melodic pitch extraction for sub-semitone
+# precision on top of the chroma coarse estimate.  The tool works fully
+# without essentia; chroma xcorr is used as the primary method.
+# Install: pip install essentia   (CPU wheels on PyPI, Linux/macOS)
+# essentia>=2.1b6.dev374
 
 # --- Audio I/O & Analysis ---------------------------------------------
 librosa>=0.10.1

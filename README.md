@@ -14,9 +14,8 @@ Nightcore tracks (2010–2014 era YouTube rips, low quality) are speed-shifted v
 4. [Environment Setup](#environment-setup)
    - [Option A — pip + venv (recommended for most users)](#option-a--pip--venv)
    - [Option B — Conda](#option-b--conda)
-5. [Step 1: Verify CUDA and Dependencies](#step-1-verify-cuda-and-dependencies)
-6. [Troubleshooting CUDA](#troubleshooting-cuda)
-7. [Project Structure](#project-structure)
+5. [Step 1: Verify Dependencies](#step-1-verify-dependencies)
+6. [Project Structure](#project-structure)
 8. [Development Roadmap](#development-roadmap)
 9. [Usage](#usage)
    - [Interactive Workflow (recommended)](#interactive-workflow-recommended)
@@ -34,7 +33,7 @@ Input files are dirty by design: leading/trailing silence, localised artifacts (
 
 1. Both files (nightcore + FLAC source) are loaded as mono float32 at 22 050 Hz. Leading and trailing silence is trimmed automatically before any analysis or duration measurement (configurable threshold; can be disabled).
 2. Both files are sliced into overlapping fixed-length windows (default: 10 s windows, 5 s hop = 50% overlap).
-3. Each window independently produces a pitch estimate (CREPE via TensorFlow/CUDA) and a tempo estimate (librosa onset detection).
+3. Both audio files produce a pitch-shift estimate via CQT chromagram cross-correlation (librosa). Optionally refined by MELODIA (essentia, if installed). Each window independently produces a tempo estimate (librosa onset detection).
 4. Energy-gated filtering discards silent or low-energy windows whose RMS energy is more than 40 dB below the peak window.
 5. Median/bootstrap consensus over all windows produces the final ratios, rejecting localised artifact windows as outliers. 2000 bootstrap resamples generate 95% confidence intervals for both tempo and pitch.
 6. Inter-beat-interval (IBI) ratio — full-signal beat tracking at fine hop resolution (hop=64, ≈1.45 ms) produces a secondary speed ratio at ~0.01% precision, 10–30× finer than the windowed BPM ratio. This is the recommended speed factor for `sox`.
@@ -58,9 +57,6 @@ Input files are dirty by design: leading/trailing silence, localised artifacts (
 
 | Requirement | Notes |
 |---|---|
-| **NVIDIA GPU** | Any CUDA-capable card; a 4090 is the target. |
-| **NVIDIA driver** | 525+ recommended for CUDA 12.x. Check: `nvidia-smi` |
-| **CUDA Toolkit** | 11.8 or 12.x. `tensorflow[and-cuda]` bundles its own CUDA wheels so a system install is not strictly required for TF, but the driver must be present. |
 | **Python 3.10–3.12** | 3.11 recommended. |
 | **rubberband binary** | Required by pyrubberband at runtime. |
 | **sox** | Required by the interactive workflow to create the sped-up HQNC file. |
@@ -135,7 +131,7 @@ cd nightcore-to-flac-analyzer
 
 ## Environment Setup
 
-Choose **one** of the two approaches below. Option A (pip + venv) is simpler. Option B (Conda) is more robust on Arch-derivative systems where CUDA library paths can be fragile.
+Choose **one** of the two approaches below. Option A (pip + venv) is simpler. Option B (Conda) is an alternative for users who prefer conda-managed environments.
 
 ---
 
@@ -156,8 +152,6 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> **Note:** `tensorflow[and-cuda]` (included in `requirements.txt`) ships its own cuDNN and CUDA runtime as Python wheels. You do **not** need a system-level CUDA Toolkit install for TensorFlow itself, but the NVIDIA driver must be installed and `nvidia-smi` must work.
-
 ---
 
 ### Option B — Conda
@@ -168,33 +162,23 @@ conda env create -f environment.yml
 
 # 2. Activate it
 conda activate nightcore-analyzer
-
-# 3. Install CREPE — must be done separately.
-#    setuptools 81+ removed pkg_resources entirely; CREPE's 2020-era setup.py
-#    imports it. Pin setuptools<81, then install CREPE without build isolation:
-pip install "setuptools<81"
-pip install --no-build-isolation crepe
-
-# 4. (Optional) If TensorFlow still cannot see the GPU after conda setup,
-#    install the CUDA toolkit inside the conda env:
-conda install -c nvidia cuda-toolkit cudnn
 ```
 
 ---
 
-## Step 1: Verify CUDA and Dependencies
+## Step 1: Verify Dependencies
 
-**This step is mandatory before any analysis.** Run the verification script:
+Run the verification script to confirm all required packages are importable:
 
 ```bash
 python verify_cuda.py
 ```
 
-Expected output on a working system (abbreviated):
+Expected output (abbreviated):
 
 ```
 ============================================================
-  Nightcore Analyzer — Environment & CUDA Verification
+  Nightcore Analyzer — Environment Verification
 ============================================================
 
 [1] Python
@@ -203,188 +187,12 @@ Expected output on a working system (abbreviated):
 [2] NumPy
     [PASS] Import + version: 1.26.x
 ...
-[10] TensorFlow — CRITICAL: GPU / CUDA checks
-    [PASS] Import + version: 2.15.x
-    [PASS] Built with CUDA
-    [PASS] GPU device detection (CRITICAL): 1 GPU(s): ['/physical_device:GPU:0']
-    [PASS] GPU compute test (matmul on /GPU:0): Matrix multiply on GPU:0 — output shape (2, 2)
-
-[11] CREPE (TensorFlow-based pitch detector)
-    [PASS] Import
-
 ============================================================
-  ALL 15 CHECKS PASSED
+  ALL CHECKS PASSED
 
-  GPU and CUDA: VERIFIED
   Safe to proceed to Step 2 — Core Analysis Module.
 ============================================================
 ```
-
-**Do not proceed to Step 2 (or beyond) until all checks pass, particularly the GPU detection check.** CREPE pitch extraction running on CPU is impractically slow for the windowed consensus pipeline.
-
----
-
-## Troubleshooting CUDA
-
-### `nvidia-smi` not found — NVIDIA driver not installed
-
-This is the most common cause of the GPU CRITICAL failure. TensorFlow (even
-`tensorflow[and-cuda]`, which bundles its own CUDA toolkit) still requires the
-NVIDIA driver's user-space library `libcuda.so.1` to be present on the system.
-That library ships with the driver package, not with any conda or pip install.
-
-**Check first:**
-
-```bash
-nvidia-smi
-```
-
-If you get `command not found`, install the driver:
-
-```bash
-# Arch / Manjaro
-sudo pacman -S nvidia nvidia-utils
-# Then reboot — the kernel module must be loaded
-
-# Ubuntu / Debian (pick the version matching your kernel)
-sudo apt install nvidia-driver-535
-# Then reboot
-
-# Fedora
-sudo dnf install akmod-nvidia
-# Then reboot
-```
-
-After rebooting, confirm the driver is loaded:
-
-```bash
-nvidia-smi          # should show your GPU, driver version, and CUDA version
-lsmod | grep nvidia # should list nvidia, nvidia_modeset, etc.
-```
-
-Then re-run `python verify_cuda.py`.
-
----
-
-### `nvidia-smi` works but TensorFlow cannot see the GPU
-
-`tensorflow[and-cuda]` bundles cuDNN, cuFFT, cuBLAS etc. as pip wheels, but
-it still calls `dlopen("libcuda.so.1")` at import time to reach the NVIDIA
-driver. That file comes from the system driver package, not from any pip or
-conda install. When using a **conda environment**, conda prepends its own
-`$CONDA_PREFIX/lib` to `LD_LIBRARY_PATH`, which can push `/usr/lib` (where
-`libcuda.so.1` lives on Arch/Garuda) out of TF's search window.
-
-**Permanent fix — use the included activation hook script (recommended):**
-
-```bash
-conda activate nightcore-analyzer
-bash setup_conda_libcuda.sh
-conda deactivate && conda activate nightcore-analyzer
-python verify_cuda.py
-```
-
-This writes a conda activation script that prepends `/usr/lib` to
-`LD_LIBRARY_PATH` every time the environment is activated. It is automatically
-undone on `conda deactivate`.
-
-**Quick one-off test (no permanent change):**
-
-```bash
-# bash / zsh
-export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
-python verify_cuda.py
-```
-
-```fish
-# fish shell — export/= syntax does NOT work; use set -gx
-set -gx LD_LIBRARY_PATH /usr/lib:$LD_LIBRARY_PATH
-python verify_cuda.py
-```
-
-**If the above still fails in fish — clear `LD_PRELOAD` first:**
-
-Some conda environments or shell tools set `LD_PRELOAD` to a library that
-interferes at runtime.  In fish you cannot just empty it — you must erase it
-with `set -e`:
-
-```fish
-set -e LD_PRELOAD   # erase LD_PRELOAD entirely (fish: set -e = unset)
-set -gx LD_LIBRARY_PATH /usr/lib:$LD_LIBRARY_PATH
-python verify_cuda.py
-```
-
-To avoid running this every session, add it to your fish startup file:
-
-```fish
-# ~/.config/fish/config.fish
-set -e LD_PRELOAD
-```
-
-**Verify `libcuda.so.1` is present first:**
-
-```bash
-find /usr -name "libcuda.so.1" 2>/dev/null
-# Expected on Arch/Garuda: /usr/lib/libcuda.so.1
-# Expected on Ubuntu/Debian: /usr/lib/x86_64-linux-gnu/libcuda.so.1
-```
-
-Adjust the path in `setup_conda_libcuda.sh` if your distro puts the library
-somewhere else.
-
-**Also check for a conda cuda-toolkit conflict:**
-
-If you previously ran `conda install cuda-toolkit` or
-`conda install -c nvidia cudnn`, you have both conda-managed CUDA 13 and
-pip-managed CUDA 12 in the same environment — a known source of subtle
-failures. The cleanest fix is to recreate the environment from scratch:
-
-```bash
-conda deactivate
-conda env remove -n nightcore-analyzer
-conda env create -f environment.yml
-conda activate nightcore-analyzer
-pip install "setuptools<81"
-pip install --no-build-isolation crepe
-bash setup_conda_libcuda.sh
-conda deactivate && conda activate nightcore-analyzer
-python verify_cuda.py
-```
-
-Do **not** run `conda install cuda-toolkit` or `conda install cudnn` into
-this environment — `tensorflow[and-cuda]` supplies its own CUDA 12 wheels.
-
-### TensorFlow version mismatch
-
-The bundled CUDA wheel approach requires TF ≥ 2.13. If you have an older TF installed:
-
-```bash
-pip install --upgrade "tensorflow[and-cuda]>=2.15.0,<2.17.0"
-```
-
-### `libcudnn.so.8` not found
-
-```bash
-# Check what cuDNN is available in the TF wheel
-python -c "import tensorflow as tf; print(tf.sysconfig.get_lib())"
-ls $(python -c "import tensorflow as tf; print(tf.sysconfig.get_lib())")
-
-# If missing, install cuDNN separately via conda:
-conda install -c nvidia cudnn
-```
-
-### Multiple GPUs / wrong device selected
-
-TensorFlow uses GPU 0 by default. To pin to a specific device:
-
-```bash
-export CUDA_VISIBLE_DEVICES=0    # use only GPU 0 (the 4090)
-python verify_cuda.py
-```
-
-### CREPE model weights
-
-CREPE downloads model weights on first use (~84 MB) from the internet. Ensure network access is available during first analysis run. Weights are cached in `~/.crepe/` (Linux/macOS).
 
 ---
 
@@ -392,7 +200,7 @@ CREPE downloads model weights on first use (~84 MB) from the internet. Ensure ne
 
 ```
 nightcore-to-flac-analyzer/
-├── verify_cuda.py              # Step 1: environment + CUDA verification
+├── verify_cuda.py              # Step 1: environment verification
 ├── setup_conda_libcuda.sh      # one-time conda LD_LIBRARY_PATH fix (fish + bash)
 ├── requirements.txt            # pip dependency specification
 ├── environment.yml             # Conda environment specification
@@ -407,7 +215,7 @@ nightcore-to-flac-analyzer/
 │   ├── workflow.py             # python -m nightcore_analyzer.workflow  (interactive guided mode)
 │   ├── pipeline.py             # top-level orchestrator
 │   ├── io.py                   # audio loading, resampling, windowing, energy gating
-│   ├── pitch.py                # CREPE per-window F0 estimation
+│   ├── pitch.py                # chromagram xcorr pitch-shift estimation (+ optional MELODIA)
 │   ├── tempo.py                # librosa per-window BPM estimation
 │   ├── consensus.py            # median/bootstrap ratio, CI, classification, RB params
 │   ├── spectral.py             # spectral comparison (brightness, EQ, compression, reverb)
@@ -427,7 +235,7 @@ nightcore-to-flac-analyzer/
 
 | Step | Status | Description |
 |------|--------|-------------|
-| 1 | ✅ Complete | Environment setup, CUDA verification |
+| 1 | ✅ Complete | Environment setup, dependency verification |
 | 2 | ✅ Complete | Core analysis module — CLI-testable windowed pipeline |
 | 3 | ✅ Complete | PyQt6 GUI shell — file pickers, run button, worker thread |
 | 4 | ✅ Complete | Results visualisation — per-window histograms |
@@ -680,17 +488,11 @@ conda env remove -n nightcore-analyzer
 conda env list
 ```
 
-### 3. Remove CREPE model weights
+### 3. Remove essentia data (if installed)
 
-CREPE downloads ~84 MB of model weights on first use and caches them here:
-
-```bash
-# Linux / macOS
-rm -rf ~/.crepe
-
-# Windows
-rmdir /s /q "%USERPROFILE%\.crepe"
-```
+If you installed essentia for MELODIA pitch refinement, no model weights are
+downloaded automatically — essentia ships its algorithms in the package itself.
+No additional cleanup is needed.
 
 ### 4. Delete the cloned repository
 
@@ -716,8 +518,7 @@ ls nightcore-to-flac-analyzer   # should return: No such file or directory
 # Confirm the conda environment is gone (if applicable)
 conda env list                  # nightcore-analyzer should not appear
 
-# Confirm CREPE weights are gone
-ls ~/.crepe                     # should return: No such file or directory
+
 ```
 
 After these steps, no files from this project remain on your system.

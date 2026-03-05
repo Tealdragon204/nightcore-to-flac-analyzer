@@ -130,6 +130,12 @@ class AnalysisResult:
     # ── sanity warnings (populated by build_result) ───────────────────────────
     warnings: List[str] = field(default_factory=list)
 
+    # ── pitch detection method ─────────────────────────────────────────────────
+    # Set by pipeline.run() after build_result().
+    # "chroma_xcorr"   — chromagram cross-correlation only (librosa)
+    # "chroma+melodia" — chroma coarse + MELODIA refinement (essentia)
+    pitch_method: Optional[str] = None
+
     # ── IBI-based speed ratio (higher precision than windowed BPM) ────────────
     # Populated by pipeline.run() after build_result().  None if beat tracking
     # on the full signal failed to find enough beats (e.g. very short files).
@@ -181,8 +187,10 @@ class AnalysisResult:
         lines.append(
             f"Pitch ratio     : {self.pitch_ratio:.6f}"
             f"  95% CI [{ci_p[0]:.6f}, {ci_p[1]:.6f}]"
-            f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc windows)"
+            f"  (from {self.n_source_pitch_windows} src / {self.n_nc_pitch_windows} nc samples)"
         )
+        if self.pitch_method:
+            lines.append(f"Pitch method    : {self.pitch_method}")
 
         # Plain-English speed summary
         tr = self.tempo_ratio
@@ -488,14 +496,15 @@ def _check_sanity(
                 "distinguish the two cases."
             )
 
-    # Wide pitch CI → CREPE could not reliably track F0
+    # Wide pitch CI → estimator could not reliably determine the pitch ratio
     if pitch_ratio > 0:
         ci_span = pitch_ci[1] - pitch_ci[0]
         if ci_span > WIDE_CI_RELATIVE * pitch_ratio:
             warnings.append(
                 f"Pitch CI is very wide ({pitch_ci[0]:.3f}–{pitch_ci[1]:.3f}) relative "
-                f"to the point estimate ({pitch_ratio:.4f}). CREPE could not reliably "
-                "track pitch — this is common with polyphonic or heavily processed audio. "
+                f"to the point estimate ({pitch_ratio:.4f}). The pitch estimator could "
+                "not reliably determine a consistent pitch ratio — this is common with "
+                "polyphonic or heavily processed audio. "
                 "Trust the tempo ratio; treat the pitch ratio and classification as "
                 "approximate."
             )

@@ -14,7 +14,7 @@ from .io import (
     load_audio, strip_silence, slice_windows, energy_gate,
     WINDOW_SEC, HOP_SEC, ENERGY_GATE_DB, SILENCE_STRIP_DB,
 )
-from .pitch import batch_estimate_pitch
+from .pitch import estimate_pitch_combined
 from .tempo import batch_estimate_tempo, estimate_ibis_global
 from .consensus import build_result, compute_ibi_ratio, AnalysisResult
 from .xcorr import find_content_offset, ALIGN_MIN_OFFSET
@@ -144,12 +144,12 @@ def run(
             "Try raising --energy-gate (e.g. --energy-gate -60)."
         )
 
-    # ── 4. pitch estimation (CREPE + GPU) ─────────────────────────────────────
-    _log("Estimating pitch (CREPE)…")
-    _log("  ← nightcore →")
-    nc_pitches  = batch_estimate_pitch(nc_windows,  log=_log)
-    _log("  ← source →")
-    src_pitches = batch_estimate_pitch(src_windows, log=_log)
+    # ── 4. pitch estimation (chroma xcorr + optional MELODIA) ─────────────────
+    _log("Estimating pitch (chromagram cross-correlation)…")
+    src_pitches, nc_pitches, pitch_method = estimate_pitch_combined(
+        src_audio, nc_audio, sr, log=_log,
+    )
+    _log(f"  Pitch method: {pitch_method}")
 
     # ── 5. tempo estimation (librosa) ─────────────────────────────────────────
     # Detect source tempos first (default prior), then use the source median
@@ -186,6 +186,7 @@ def run(
     )
 
     result.intro_offset_sec = intro_offset_sec
+    result.pitch_method = pitch_method
 
     # ── 7. IBI ratio pass (full-signal, high-resolution beat timestamps) ───────
     # Runs beat tracking at hop_length=64 (≈1.45 ms) over the entire signal,
