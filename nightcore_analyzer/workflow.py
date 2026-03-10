@@ -606,16 +606,20 @@ def run_pitch_analysis(
     _hr("═")
     print("  PITCH ANALYSIS RESULTS")
     _hr("═")
-    print(f"  Pitch ratio   : {ratio:.6f}  ({shift_st:+.3f} semitones)")
+    print(f"  Pitch ratio   : {ratio:.6f}  ({shift_st:+.6f} semitones)")
     print(f"  Pitch method  : {method}")
     print(f"  Samples used  : {len(valid_src)} src  /  {len(valid_nc)} nc")
-    if abs(shift_st) < 0.5:
-        print("\n  No significant independent pitch shift detected.")
+    if shift_st == 0.0:
+        print("\n  No pitch shift detected.")
+    elif abs(shift_st) < 0.5:
+        print(f"\n  Small pitch shift detected: {shift_st:+.6f} st — below 0.5 st significance threshold.")
+        if method == "chroma_xcorr":
+            print("  Install essentia for MELODIA refinement to confirm.")
     else:
         corr_st = -shift_st
         print(
-            f"\n  Independent pitch shift detected: {shift_st:+.3f} st above speed-up.\n"
-            f"  To correct: rubberband --pitch {corr_st:+.4f}  (in addition to --time)"
+            f"\n  Independent pitch shift detected: {shift_st:+.6f} st above speed-up.\n"
+            f"  To correct: rubberband --pitch {corr_st:+.6f}  (in addition to --time)"
         )
 
 
@@ -641,6 +645,8 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
 
     # Ask to create HQNC — prompt wording and default depend on the speed factor
     print()
+    _dur_ratio_override: Optional[float] = None  # set when user picks [d]
+
     if abs(tr - 1.0) < _NEAR_UNITY:
         hqnc_name = _make_hqnc_path(hq).name
         print(
@@ -649,7 +655,19 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
             f"    If HQ is already a nightcore, this produces a pointless copy.\n"
             f"    Check that the correct files were provided (NCOG first, then HQ)."
         )
-        ans = _prompt_choice("  Create HQNC anyway?", options="yne", default="n")
+        if result1.src_duration and result1.nc_duration and result1.nc_duration > 0:
+            _dr = result1.src_duration / result1.nc_duration
+            print(
+                f"\n  Duration ratio (HQ÷NCOG): {_dr:.6f}×"
+                f"  ({result1.src_duration:.3f}s ÷ {result1.nc_duration:.3f}s)"
+                f"\n  [d] uses this as the speed factor instead of the detected ~1.000×."
+            )
+            ans = _prompt_choice("  Create HQNC?", options="ydne", default="n")
+            if ans == "d":
+                _dur_ratio_override = _dr
+                ans = "y"  # fall through to the shared creation block below
+        else:
+            ans = _prompt_choice("  Create HQNC anyway?", options="yne", default="n")
     elif tr < 1.0:
         print(
             f"  !! Speed factor is {tr:.6f}× — LESS THAN 1.\n"
@@ -665,8 +683,12 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
         )
 
     hqnc: Optional[Path] = None
-    # Use IBI ratio as the speed factor for sox when available (more precise)
-    current_speed = result1.ibi_ratio if result1.ibi_ratio is not None else tr
+    # Use IBI ratio when available (more precise); override with duration ratio if user chose [d]
+    current_speed = (
+        _dur_ratio_override
+        if _dur_ratio_override is not None
+        else (result1.ibi_ratio if result1.ibi_ratio is not None else tr)
+    )
     upd_version = 0
     if ans == "y":
         hqnc = _make_hqnc_path_v(hq, upd_version)
@@ -802,13 +824,26 @@ def run_speed_comparison(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> Non
     else:
         if not tempo_same:
             print()
+            _sc_dur_ratio: Optional[float] = None  # set only when user picks [d]
             if abs(tr - 1.0) < _NEAR_UNITY:
                 hqnc_name = _make_hqnc_path(hq).name
                 print(
                     f"  ! Speed factor is ~1.000× — output would be: {hqnc_name}\n"
                     f"    Check that the correct files were provided (NCOG first, then HQ)."
                 )
-                ans = _prompt_choice("  Create HQNC anyway?", options="yne", default="n")
+                if result.src_duration and result.nc_duration and result.nc_duration > 0:
+                    _computed_dr = result.src_duration / result.nc_duration
+                    print(
+                        f"\n  Duration ratio (HQ÷NCOG): {_computed_dr:.6f}×"
+                        f"  ({result.src_duration:.3f}s ÷ {result.nc_duration:.3f}s)"
+                        f"\n  [d] uses this as the speed factor instead of the detected ~1.000×."
+                    )
+                    ans = _prompt_choice("  Create HQNC?", options="ydne", default="n")
+                    if ans == "d":
+                        _sc_dur_ratio = _computed_dr  # only populated when user chose [d]
+                        ans = "y"
+                else:
+                    ans = _prompt_choice("  Create HQNC anyway?", options="yne", default="n")
             elif tr < 1.0:
                 print(
                     f"  !! Speed factor is {tr:.6f}× — LESS THAN 1.\n"
@@ -821,9 +856,10 @@ def run_speed_comparison(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> Non
                     options="yne",
                     default="y",
                 )
+            _sc_speed = _sc_dur_ratio if _sc_dur_ratio is not None else tr
             if ans == "y":
                 hqnc = _make_hqnc_path(hq)
-                _run_sox(hq, hqnc, tr)
+                _run_sox(hq, hqnc, _sc_speed)
 
     # Spectral
     print()
