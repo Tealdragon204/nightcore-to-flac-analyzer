@@ -236,7 +236,7 @@ def estimate_pitch_melodia(
 
     melodia_st = 12.0 * math.log2(float(np.median(nc_voiced)) / float(np.median(src_voiced)))
     if log:
-        log(f"    MELODIA: {melodia_st:+.3f} st  ({len(src_voiced)} src / {len(nc_voiced)} nc voiced frames)")
+        log(f"    MELODIA: {melodia_st:+.6f} st  ({len(src_voiced)} src / {len(nc_voiced)} nc voiced frames)")
 
     return src_hz, nc_hz
 
