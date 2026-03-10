@@ -118,6 +118,28 @@ def _run_sox(src: Path, dst: Path, speed: float) -> None:
     print(f"  Created: {dst}")
 
 
+def _run_rubberband(src: Path, dst: Path, pitch_st: float) -> None:
+    if not shutil.which("rubberband"):
+        print(
+            "\n  ERROR: rubberband not found on PATH.\n"
+            "  Install it:  sudo apt install rubberband-cli   (Debian/Ubuntu)\n"
+            "               brew install rubberband            (macOS)\n"
+        )
+        raise SystemExit(1)
+    print(f"\n  Running: rubberband --pitch {pitch_st:+.6f} '{src}' '{dst}'")
+    subprocess.run(["rubberband", "--pitch", f"{pitch_st:+.6f}", str(src), str(dst)], check=True)
+    print(f"  Created: {dst}")
+
+
+def _make_ps_path(src: Path, version: int) -> Path:
+    """
+    Return a pitch-shift-corrected path.
+    version 1  →  ``Song [Nightcore] PS1.flac``
+    version 2  →  ``Song [Nightcore] PS2.flac``
+    """
+    return src.with_name(src.stem + f" PS{version}" + src.suffix)
+
+
 _LOSSLESS_EXTENSIONS = {"flac", "wav", "aiff", "aif", "pcm"}
 
 
@@ -571,8 +593,11 @@ def run_pitch_analysis(
     nc_path: Path,
     *,
     label: str = "Pitch analysis",
-) -> None:
-    """Run chroma xcorr + optional MELODIA pitch analysis and print the result."""
+) -> Optional[Path]:
+    """
+    Run chroma xcorr + optional MELODIA pitch analysis, offer rubberband correction,
+    and return the pitch-corrected file path (PSn) if one was created, else None.
+    """
     import math as _math
     import numpy as _np
     from .pitch import estimate_pitch_combined
@@ -597,7 +622,7 @@ def run_pitch_analysis(
     valid_nc  = [v for v in nc_hz  if v is not None and v > 0]
     if not valid_src or not valid_nc:
         print("  Pitch analysis: insufficient voiced frames — no result.")
-        return
+        return None
 
     ratio    = float(_np.median(valid_nc)) / float(_np.median(valid_src))
     shift_st = 12.0 * _math.log2(ratio)
@@ -611,16 +636,72 @@ def run_pitch_analysis(
     print(f"  Samples used  : {len(valid_src)} src  /  {len(valid_nc)} nc")
     if shift_st == 0.0:
         print("\n  No pitch shift detected.")
+        return None
     elif abs(shift_st) < 0.5:
         print(f"\n  Small pitch shift detected: {shift_st:+.6f} st — below 0.5 st significance threshold.")
         if method == "chroma_xcorr":
             print("  Install essentia for MELODIA refinement to confirm.")
+        return None
     else:
         corr_st = -shift_st
         print(
             f"\n  Independent pitch shift detected: {shift_st:+.6f} st above speed-up.\n"
-            f"  To correct: rubberband --pitch {corr_st:+.6f}  (in addition to --time)"
+            f"  To reconstruct original: rubberband --pitch {corr_st:+.6f}  (in addition to --time)"
         )
+
+    # ── pitch correction loop ──────────────────────────────────────────────────
+    ps_version = 0
+    current_ps: Optional[Path] = None   # most recent pitch-corrected file
+
+    while True:
+        ps_version += 1
+        next_ps = _make_ps_path(src_path, ps_version)
+        print(f"\n  Would create: {next_ps.name}")
+        ans_corr = _prompt_choice(
+            f"  Apply pitch correction (rubberband --pitch {shift_st:+.6f})?",
+            options="yne",
+            default="y",
+        )
+        if ans_corr != "y":
+            break
+
+        _run_rubberband(current_ps if current_ps is not None else src_path, next_ps, shift_st)
+        current_ps = next_ps
+
+        # ── verification ──────────────────────────────────────────────────────
+        print()
+        _hr("─")
+        print(f"  Pitch verification  ({next_ps.name} vs {nc_path.name})")
+        _hr("─")
+
+        ps_audio, _ = load_audio(str(next_ps), sr=sr)
+        ps_hz, nc_hz2, v_method = estimate_pitch_combined(
+            ps_audio, nc_audio, sr, log=lambda m: print(f"  {m}"),
+        )
+        v_valid_src = [v for v in ps_hz  if v is not None and v > 0]
+        v_valid_nc  = [v for v in nc_hz2 if v is not None and v > 0]
+        if not v_valid_src or not v_valid_nc:
+            print("  Verification: insufficient voiced frames — cannot confirm correction.")
+            break
+
+        v_ratio  = float(_np.median(v_valid_nc)) / float(_np.median(v_valid_src))
+        shift_st = 12.0 * _math.log2(v_ratio)   # residual becomes next iteration's shift
+
+        print()
+        _hr("═")
+        print("  PITCH VERIFICATION RESULTS")
+        _hr("═")
+        print(f"  Residual shift: {shift_st:+.6f} st  (method: {v_method})")
+        print(f"  Samples used  : {len(v_valid_src)} src  /  {len(v_valid_nc)} nc")
+
+        if abs(shift_st) < 0.5:
+            print("\n  Pitch correction successful — residual within ±0.5 st.")
+            break
+        else:
+            print(f"\n  Residual shift {shift_st:+.6f} st still exceeds 0.5 st threshold.")
+            # loop continues — shift_st now holds the residual for the next prompt
+
+    return current_ps
 
 
 # ── mode: full suite ──────────────────────────────────────────────────────────
@@ -708,6 +789,7 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
             result2 = _run_pipeline(
                 nightcore=ncog, source=hqnc,
                 step_label="Analysing HQNC vs NCOG…",
+                compute_pitch=False,
             )
 
             # Attach cross-correlation result before printing (verification only)
@@ -752,32 +834,36 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
     else:
         print("\n  Step 2/5 — Skipped (no HQNC created).")
 
-    # Step 3 — pitch analysis
+    # Step 3 — pitch analysis + optional correction
     print()
     _hr("═")
     print("  Step 3/5 — Pitch analysis")
     _hr("═")
     ans_pitch = _prompt_choice("  Run pitch analysis?", options="yn", default="y")
+    psfile: Optional[Path] = None
     if ans_pitch == "y":
         pitch_src = hqnc if (hqnc is not None and hqnc.is_file()) else hq
-        run_pitch_analysis(
+        psfile = run_pitch_analysis(
             src_path=pitch_src,
             nc_path=ncog,
             label=f"Step 3/5 — Pitch analysis  ({pitch_src.name} vs {ncog.name})",
         )
 
-    # Step 4 — spectral analysis
+    # Step 4 — spectral analysis (prefer pitch-corrected file when available)
     print()
-    ans2 = _prompt_choice("  Run spectral analysis?", options="yn")
+    _hr("═")
+    print("  Step 4/5 — Spectral analysis")
+    _hr("═")
+    ans2 = _prompt_choice("  Run spectral analysis?", options="yn", default="y")
     if ans2 == "y":
-        if hqnc and hqnc.is_file():
+        best = psfile if (psfile and psfile.is_file()) else hqnc
+        if best and best.is_file():
             run_spectral_analysis(
-                path_a=hqnc, path_b=ncog,
-                label_a=f"HQNC ({hqnc.name})",
+                path_a=best, path_b=ncog,
+                label_a=f"{best.name}",
                 label_b=f"NCOG ({ncog.name})",
             )
         else:
-            # No HQNC — compare HQ vs NCOG spectrally
             run_spectral_analysis(
                 path_a=hq, path_b=ncog,
                 label_a=f"HQ ({hq.name})",
@@ -791,8 +877,10 @@ def run_full_suite(hq: Path, ncog: Path, src_trim_sec: float = 0.0) -> None:
         options="yn",
     )
     if ans3 == "y":
-        # Prefer the HQNC (the file the user will actually use); fall back to HQ source
-        adj_target = hqnc if (hqnc and hqnc.is_file()) else hq
+        # Prefer pitch-corrected file, then HQNC, then original HQ
+        adj_target = (psfile if (psfile and psfile.is_file())
+                      else hqnc if (hqnc and hqnc.is_file())
+                      else hq)
         print(f"\n  Target: {adj_target.name}")
         run_loudness_adjustment(adj_target)
 
